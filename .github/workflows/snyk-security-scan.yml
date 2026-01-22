@@ -14,9 +14,6 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      - name: Go to Source Directory
-        run: cd src
-
       - name: Setup .NET
         uses: actions/setup-dotnet@v4
         with:
@@ -24,10 +21,12 @@ jobs:
 
       - name: Restore dependencies
         run: dotnet restore
+        working-directory: ./src
 
       - name: Build
         run: dotnet build --no-restore
-
+        working-directory: ./src
+        
       - name: Setup Snyk
         uses: snyk/actions/setup@master
         env:
@@ -35,5 +34,6 @@ jobs:
 
       - name: Run Snyk Code
         run: snyk code test
+        working-directory: ./src
         env:
           SNYK_TOKEN: ${{ secrets.SNYK_TOKEN }}
