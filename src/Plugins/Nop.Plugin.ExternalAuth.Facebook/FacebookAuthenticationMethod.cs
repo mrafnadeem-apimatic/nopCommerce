@@ -8,7 +8,7 @@ using Nop.Services.Plugins;
 namespace Nop.Plugin.ExternalAuth.Facebook;
 
 /// <summary>
-/// Represents method for the authentication with Facebook account
+/// Represents method for the authentication with Facebook account. ABC
 /// </summary>
 public class FacebookAuthenticationMethod : BasePlugin, IExternalAuthenticationMethod
 {
