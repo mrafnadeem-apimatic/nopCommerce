@@ -1760,11 +1760,40 @@ public class PayPalCommerceServiceManager
                 var intent = MapCheckoutPaymentIntent(settings.PaymentType);
 
                 var purchaseUnits = new List<SdkModels.PurchaseUnitRequest>();
-                var sdkPurchaseUnit = MapPurchaseUnitToServerSdk(purchaseUnit);
-                if (sdkPurchaseUnit is not null)
-                    purchaseUnits.Add(sdkPurchaseUnit);
 
-                var sdkPaymentSource = MapPaymentSourceToServerSdk(paymentSourceDetails);
+                if (purchaseUnit is not null)
+                {
+                    var sdkPurchaseUnit = new SdkModels.PurchaseUnitRequest(
+                        amount: MapAmountWithBreakdownToServerSdk(purchaseUnit.Amount),
+                        referenceId: purchaseUnit.ReferenceId,
+                        payee: MapPayeeToServerSdk(purchaseUnit.Payee),
+                        paymentInstruction: MapPaymentInstructionToServerSdk(purchaseUnit.PaymentInstruction),
+                        description: purchaseUnit.Description,
+                        customId: purchaseUnit.CustomId,
+                        invoiceId: purchaseUnit.InvoiceId,
+                        softDescriptor: purchaseUnit.SoftDescriptor,
+                        items: purchaseUnit.Items?.Select(MapItemToServerSdk).Where(item => item is not null).ToList(),
+                        shipping: MapShippingToServerSdk(purchaseUnit.Shipping),
+                        supplementaryData: MapSupplementaryDataToServerSdk(purchaseUnit.SupplementaryData));
+
+                    if (sdkPurchaseUnit is not null)
+                        purchaseUnits.Add(sdkPurchaseUnit);
+                }
+
+                SdkModels.PaymentSource sdkPaymentSource = null;
+                if (paymentSourceDetails is not null)
+                {
+                    sdkPaymentSource = new SdkModels.PaymentSource();
+
+                    if (paymentSourceDetails.Card is not null)
+                        sdkPaymentSource.Card = MapCardToServerSdk(paymentSourceDetails.Card);
+
+                    if (paymentSourceDetails.PayPal is not null)
+                        sdkPaymentSource.Paypal = MapPaypalWalletToServerSdk(paymentSourceDetails.PayPal);
+
+                    if (paymentSourceDetails.Venmo is not null)
+                        sdkPaymentSource.Venmo = MapVenmoWalletToServerSdk(paymentSourceDetails.Venmo);
+                }
 
                 var orderRequest = new SdkModels.OrderRequest(
                     intent: intent,
@@ -1843,25 +1872,6 @@ public class PayPalCommerceServiceManager
             PaymentType.Authorize => SdkModels.CheckoutPaymentIntent.Authorize,
             _ => SdkModels.CheckoutPaymentIntent.Capture
         };
-    }
-
-    private static SdkModels.PurchaseUnitRequest MapPurchaseUnitToServerSdk(PurchaseUnit unit)
-    {
-        if (unit is null)
-            return null;
-
-        return new SdkModels.PurchaseUnitRequest(
-            amount: MapAmountWithBreakdownToServerSdk(unit.Amount),
-            referenceId: unit.ReferenceId,
-            payee: MapPayeeToServerSdk(unit.Payee),
-            paymentInstruction: MapPaymentInstructionToServerSdk(unit.PaymentInstruction),
-            description: unit.Description,
-            customId: unit.CustomId,
-            invoiceId: unit.InvoiceId,
-            softDescriptor: unit.SoftDescriptor,
-            items: unit.Items?.Select(MapItemToServerSdk).Where(item => item is not null).ToList(),
-            shipping: MapShippingToServerSdk(unit.Shipping),
-            supplementaryData: MapSupplementaryDataToServerSdk(unit.SupplementaryData));
     }
 
     private static SdkModels.AmountWithBreakdown MapAmountWithBreakdownToServerSdk(OrderMoney amount)
@@ -2052,25 +2062,6 @@ public class PayPalCommerceServiceManager
             level3: level3);
 
         return new SdkModels.SupplementaryData(card: cardSupplementary);
-    }
-
-    private static SdkModels.PaymentSource MapPaymentSourceToServerSdk(PaymentSource source)
-    {
-        if (source is null)
-            return null;
-
-        var result = new SdkModels.PaymentSource();
-
-        if (source.Card is not null)
-            result.Card = MapCardToServerSdk(source.Card);
-
-        if (source.PayPal is not null)
-            result.Paypal = MapPaypalWalletToServerSdk(source.PayPal);
-
-        if (source.Venmo is not null)
-            result.Venmo = MapVenmoWalletToServerSdk(source.Venmo);
-
-        return result;
     }
 
     private static SdkModels.CardRequest MapCardToServerSdk(Nop.Plugin.Payments.PayPalCommerce.Services.Api.Models.PaymentSources.Card card)
