@@ -36,6 +36,9 @@
     <None Remove="Views\Public\_Messages.cshtml" />
     <None Remove="Views\_ViewImports.cshtml" />
   </ItemGroup>
+  <ItemGroup>
+    <PackageReference Include="PayPalServerSDK" Version="2.0.0" />
+  </ItemGroup>
 
   <ItemGroup>
     <Content Include="logo.png">
@@ -92,7 +95,6 @@
     <ProjectReference Include="$(SolutionDir)\Presentation\Nop.Web\Nop.Web.csproj" />
     <ClearPluginAssemblies Include="$(SolutionDir)\Build\ClearPluginAssemblies.proj" />
   </ItemGroup>
-
   <!-- This target execute after "Build" target -->
   <Target Name="NopTarget" AfterTargets="Build">
     <!-- Delete unnecessary libraries from plugins path -->
