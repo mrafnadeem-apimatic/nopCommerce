@@ -1,4 +1,4 @@
-﻿using Microsoft.AspNetCore.Mvc;
+using Microsoft.AspNetCore.Mvc;
 using Nop.Core.Domain.Logging;
 using Nop.Core.Http;
 using Nop.Plugin.Payments.PayPal.Services;
@@ -27,6 +27,13 @@ public class PayPalController : BasePublicController
 
     #region Ctor
 
+    /// <summary>
+    /// Initializes a new instance of the <see cref="PayPalController"/> with required services.
+    /// </summary>
+    /// <param name="logger">Logger for controller diagnostics.</param>
+    /// <param name="orderProcessingService">Service used to update order state (e.g., mark as paid).</param>
+    /// <param name="orderService">Service used to retrieve orders.</param>
+    /// <param name="payPalHttpClient">HTTP client for interacting with the PayPal API.</param>
     public PayPalController(
         ILogger logger,
         IOrderProcessingService orderProcessingService,
@@ -43,6 +50,12 @@ public class PayPalController : BasePublicController
 
     #region Methods
 
+    /// <summary>
+    /// Handles PayPal return callback for an order: validates the PayPal token, attempts to capture the PayPal order, marks the order as paid on success, and redirects the user to the appropriate checkout page.
+    /// </summary>
+    /// <param name="token">The PayPal order token returned by PayPal (expected to match the order's stored AuthorizationTransactionId).</param>
+    /// <param name="orderId">The nopCommerce order identifier associated with the PayPal transaction.</param>
+    /// <returns>A redirect result to either the checkout payment method selection, the checkout completed page for the order, or the site homepage depending on validation and processing outcomes.</returns>
     public async Task<IActionResult> Return(string token, int orderId)
     {
         if (string.IsNullOrEmpty(token))
@@ -104,6 +117,11 @@ public class PayPalController : BasePublicController
         return RedirectToRoute(NopRouteNames.Standard.CHECKOUT_COMPLETED, new { orderId = order.Id });
     }
 
+    /// <summary>
+    /// Handle a PayPal cancellation callback for an order and redirect the customer to the appropriate page.
+    /// </summary>
+    /// <param name="orderId">The identifier of the order associated with the cancellation.</param>
+    /// <returns>A redirect to the payment method selection when the order exists; otherwise a redirect to the site's homepage.</returns>
     public async Task<IActionResult> Cancel(int orderId)
     {
         var order = await _orderService.GetOrderByIdAsync(orderId);
@@ -115,5 +133,4 @@ public class PayPalController : BasePublicController
 
     #endregion
 }
-
 

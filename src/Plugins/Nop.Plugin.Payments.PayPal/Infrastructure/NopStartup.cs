@@ -15,7 +15,12 @@ public class NopStartup : INopStartup
     /// Add and configure any of the middleware
     /// </summary>
     /// <param name="services">Collection of service descriptors</param>
-    /// <param name="configuration">Configuration of the application</param>
+    /// <summary>
+    /// Registers services required by the PayPal plugin.
+    /// </summary>
+    /// <remarks>
+    /// Adds PayPalHttpClient to the dependency injection container with a scoped lifetime.
+    /// </remarks>
     public void ConfigureServices(IServiceCollection services, IConfiguration configuration)
     {
         //register PayPal HTTP client helper
@@ -25,7 +30,10 @@ public class NopStartup : INopStartup
     /// <summary>
     /// Configure the using of added middleware
     /// </summary>
-    /// <param name="application">Builder for configuring an application's request pipeline</param>
+    /// <summary>
+    /// Provides a hook to configure the application's HTTP request pipeline for the PayPal plugin.
+    /// </summary>
+    /// <param name="application">The application builder used to register middleware components.</param>
     public void Configure(IApplicationBuilder application)
     {
     }
@@ -35,5 +43,4 @@ public class NopStartup : INopStartup
     /// </summary>
     public int Order => 3000;
 }
-
 

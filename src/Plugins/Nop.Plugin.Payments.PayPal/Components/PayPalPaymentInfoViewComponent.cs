@@ -9,6 +9,10 @@ namespace Nop.Plugin.Payments.PayPal.Components;
 /// </summary>
 public class PayPalPaymentInfoViewComponent : NopViewComponent
 {
+    /// <summary>
+    /// Renders the PayPal payment information view for checkout using a new PaymentInfoModel.
+    /// </summary>
+    /// <returns>An <see cref="IViewComponentResult"/> that renders the PayPal payment information view with a <see cref="PaymentInfoModel"/>.</returns>
     public Task<IViewComponentResult> InvokeAsync()
     {
         var model = new PaymentInfoModel();
@@ -16,5 +20,4 @@ public class PayPalPaymentInfoViewComponent : NopViewComponent
         return Task.FromResult<IViewComponentResult>(View("~/Plugins/Payments.PayPal/Views/PaymentInfo.cshtml", model));
     }
 }
-
 
