@@ -1757,14 +1757,23 @@ public class PayPalCommerceServiceManager
                     };
                 }
 
-                var createOrderRequest = new CreateOrderRequest
-                {
-                    Intent = settings.PaymentType.ToString().ToUpper(),
-                    PaymentSource = paymentSourceDetails,
-                    PurchaseUnits = [purchaseUnit]
-                };
+                var intent = MapCheckoutPaymentIntent(settings.PaymentType);
 
-                order = await CreateOrderWithServerSdkAsync(settings, createOrderRequest);
+                var purchaseUnits = new List<SdkModels.PurchaseUnitRequest>();
+                var sdkPurchaseUnit = MapPurchaseUnitToServerSdk(purchaseUnit);
+                if (sdkPurchaseUnit is not null)
+                    purchaseUnits.Add(sdkPurchaseUnit);
+
+                var sdkPaymentSource = MapPaymentSourceToServerSdk(paymentSourceDetails);
+
+                var orderRequest = new SdkModels.OrderRequest(
+                    intent: intent,
+                    purchaseUnits: purchaseUnits,
+                    payer: null,
+                    paymentSource: sdkPaymentSource,
+                    applicationContext: null);
+
+                order = await CreateOrderWithServerSdkAsync(settings, orderRequest);
             }
             else
             {
@@ -1800,18 +1809,16 @@ public class PayPalCommerceServiceManager
         });
     }
 
-    private async Task<Order> CreateOrderWithServerSdkAsync(PayPalCommerceSettings settings, CreateOrderRequest createOrderRequest)
+    private async Task<Order> CreateOrderWithServerSdkAsync(PayPalCommerceSettings settings, SdkModels.OrderRequest orderRequest)
     {
-        if (createOrderRequest is null)
-            throw new ArgumentNullException(nameof(createOrderRequest));
+        if (orderRequest is null)
+            throw new ArgumentNullException(nameof(orderRequest));
 
         var client = CreatePaypalServerSdkClient(settings);
 
-        var sdkOrderRequest = MapOrderRequestToServerSdk(settings, createOrderRequest);
-
         var input = new SdkModels.CreateOrderInput(
             contentType: "application/json",
-            body: sdkOrderRequest,
+            body: orderRequest,
             paypalRequestId: Guid.NewGuid().ToString(),
             paypalPartnerAttributionId: PayPalCommerceDefaults.PartnerHeader.Value,
             prefer: "return=representation");
@@ -1826,25 +1833,6 @@ public class PayPalCommerceServiceManager
             throw new NopException("Failed to map PayPal order response.");
 
         return order;
-    }
-
-    private static SdkModels.OrderRequest MapOrderRequestToServerSdk(PayPalCommerceSettings settings, CreateOrderRequest createOrderRequest)
-    {
-        var intent = MapCheckoutPaymentIntent(settings.PaymentType);
-
-        var purchaseUnits = createOrderRequest.PurchaseUnits?
-            .Select(MapPurchaseUnitToServerSdk)
-            .Where(unit => unit is not null)
-            .ToList() ?? new List<SdkModels.PurchaseUnitRequest>();
-
-        var paymentSource = MapPaymentSourceToServerSdk(createOrderRequest.PaymentSource);
-
-        return new SdkModels.OrderRequest(
-            intent: intent,
-            purchaseUnits: purchaseUnits,
-            payer: null,
-            paymentSource: paymentSource,
-            applicationContext: null);
     }
 
     private static SdkModels.CheckoutPaymentIntent MapCheckoutPaymentIntent(PaymentType paymentType)
