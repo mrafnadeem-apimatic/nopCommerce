@@ -1,8 +1,11 @@
-﻿using System.Globalization;
+using System.Globalization;
 using System.Security.Cryptography;
 using System.Text;
 using Microsoft.AspNetCore.WebUtilities;
 using Newtonsoft.Json;
+using PaypalServerSdk.Standard;
+using PaypalServerSdk.Standard.Authentication;
+using SdkModels = PaypalServerSdk.Standard.Models;
 using Nop.Core;
 using Nop.Core.Caching;
 using Nop.Core.Domain.Catalog;
@@ -1754,12 +1757,14 @@ public class PayPalCommerceServiceManager
                     };
                 }
 
-                order = await _httpClient.RequestAsync<CreateOrderRequest, CreateOrderResponse>(new CreateOrderRequest
+                var createOrderRequest = new CreateOrderRequest
                 {
                     Intent = settings.PaymentType.ToString().ToUpper(),
                     PaymentSource = paymentSourceDetails,
                     PurchaseUnits = [purchaseUnit]
-                }, settings);
+                };
+
+                order = await CreateOrderWithServerSdkAsync(settings, createOrderRequest);
             }
             else
             {
@@ -1793,6 +1798,625 @@ public class PayPalCommerceServiceManager
 
             return order;
         });
+    }
+
+    private async Task<Order> CreateOrderWithServerSdkAsync(PayPalCommerceSettings settings, CreateOrderRequest createOrderRequest)
+    {
+        if (createOrderRequest is null)
+            throw new ArgumentNullException(nameof(createOrderRequest));
+
+        var client = CreatePaypalServerSdkClient(settings);
+
+        var sdkOrderRequest = MapOrderRequestToServerSdk(settings, createOrderRequest);
+
+        var input = new SdkModels.CreateOrderInput(
+            contentType: "application/json",
+            body: sdkOrderRequest,
+            paypalRequestId: Guid.NewGuid().ToString(),
+            paypalPartnerAttributionId: PayPalCommerceDefaults.PartnerHeader.Value,
+            prefer: "return=representation");
+
+        var response = await client.OrdersController.CreateOrderAsync(input);
+        if (response?.Result is null)
+            throw new NopException("Failed to read PayPal order data.");
+
+        var sdkOrder = response.Result;
+        var order = MapOrderFromServerSdk(sdkOrder);
+        if (order is null)
+            throw new NopException("Failed to map PayPal order response.");
+
+        return order;
+    }
+
+    private static SdkModels.OrderRequest MapOrderRequestToServerSdk(PayPalCommerceSettings settings, CreateOrderRequest createOrderRequest)
+    {
+        var intent = MapCheckoutPaymentIntent(settings.PaymentType);
+
+        var purchaseUnits = createOrderRequest.PurchaseUnits?
+            .Select(MapPurchaseUnitToServerSdk)
+            .Where(unit => unit is not null)
+            .ToList() ?? new List<SdkModels.PurchaseUnitRequest>();
+
+        var paymentSource = MapPaymentSourceToServerSdk(createOrderRequest.PaymentSource);
+
+        return new SdkModels.OrderRequest(
+            intent: intent,
+            purchaseUnits: purchaseUnits,
+            payer: null,
+            paymentSource: paymentSource,
+            applicationContext: null);
+    }
+
+    private static SdkModels.CheckoutPaymentIntent MapCheckoutPaymentIntent(PaymentType paymentType)
+    {
+        return paymentType switch
+        {
+            PaymentType.Capture => SdkModels.CheckoutPaymentIntent.Capture,
+            PaymentType.Authorize => SdkModels.CheckoutPaymentIntent.Authorize,
+            _ => SdkModels.CheckoutPaymentIntent.Capture
+        };
+    }
+
+    private static SdkModels.PurchaseUnitRequest MapPurchaseUnitToServerSdk(PurchaseUnit unit)
+    {
+        if (unit is null)
+            return null;
+
+        return new SdkModels.PurchaseUnitRequest(
+            amount: MapAmountWithBreakdownToServerSdk(unit.Amount),
+            referenceId: unit.ReferenceId,
+            payee: MapPayeeToServerSdk(unit.Payee),
+            paymentInstruction: MapPaymentInstructionToServerSdk(unit.PaymentInstruction),
+            description: unit.Description,
+            customId: unit.CustomId,
+            invoiceId: unit.InvoiceId,
+            softDescriptor: unit.SoftDescriptor,
+            items: unit.Items?.Select(MapItemToServerSdk).Where(item => item is not null).ToList(),
+            shipping: MapShippingToServerSdk(unit.Shipping),
+            supplementaryData: MapSupplementaryDataToServerSdk(unit.SupplementaryData));
+    }
+
+    private static SdkModels.AmountWithBreakdown MapAmountWithBreakdownToServerSdk(OrderMoney amount)
+    {
+        if (amount is null)
+            return null;
+
+        var breakdown = amount.Breakdown is null
+            ? null
+            : new SdkModels.AmountBreakdown(
+                itemTotal: MapMoneyToServerSdk(amount.Breakdown.ItemTotal),
+                shipping: MapMoneyToServerSdk(amount.Breakdown.Shipping),
+                handling: MapMoneyToServerSdk(amount.Breakdown.Handling),
+                taxTotal: MapMoneyToServerSdk(amount.Breakdown.TaxTotal),
+                insurance: MapMoneyToServerSdk(amount.Breakdown.Insurance),
+                shippingDiscount: MapMoneyToServerSdk(amount.Breakdown.ShippingDiscount),
+                discount: MapMoneyToServerSdk(amount.Breakdown.Discount));
+
+        return new SdkModels.AmountWithBreakdown(
+            currencyCode: amount.CurrencyCode,
+            mValue: amount.Value,
+            breakdown: breakdown);
+    }
+
+    private static SdkModels.Money MapMoneyToServerSdk(Money money)
+    {
+        return money is null
+            ? null
+            : new SdkModels.Money(money.CurrencyCode, money.Value);
+    }
+
+    private static SdkModels.PayeeBase MapPayeeToServerSdk(Payee payee)
+    {
+        if (payee is null)
+            return null;
+
+        return new SdkModels.PayeeBase(
+            emailAddress: payee.EmailAddress,
+            merchantId: payee.MerchantId);
+    }
+
+    private static SdkModels.PaymentInstruction MapPaymentInstructionToServerSdk(PaymentInstruction instruction)
+    {
+        if (instruction is null)
+            return null;
+
+        var platformFees = instruction.PlatformFees?
+            .Select(fee => new SdkModels.PlatformFee(
+                amount: MapMoneyToServerSdk(fee.Amount),
+                payee: MapPayeeToServerSdk(fee.Payee)))
+            .Where(fee => fee.Amount is not null)
+            .ToList();
+
+        SdkModels.DisbursementMode? disbursementMode = null;
+        if (!string.IsNullOrEmpty(instruction.DisbursementMode) &&
+            Enum.TryParse(instruction.DisbursementMode, ignoreCase: true, out SdkModels.DisbursementMode parsedMode))
+        {
+            disbursementMode = parsedMode;
+        }
+
+        return new SdkModels.PaymentInstruction(
+            platformFees: platformFees,
+            disbursementMode: disbursementMode,
+            payeePricingTierId: instruction.PayeePricingTierId,
+            payeeReceivableFxRateId: instruction.PayeeReceivableFxRateId);
+    }
+
+    private static SdkModels.Item MapItemToServerSdk(Item item)
+    {
+        if (item is null)
+            return null;
+
+        var unitAmount = MapMoneyToServerSdk(item.UnitAmount);
+        if (unitAmount is null || string.IsNullOrEmpty(item.Name) || string.IsNullOrEmpty(item.Quantity))
+            return null;
+
+        SdkModels.ItemCategory? category = null;
+        if (!string.IsNullOrEmpty(item.Category) &&
+            Enum.TryParse(item.Category, ignoreCase: true, out SdkModels.ItemCategory parsedCategory))
+        {
+            category = parsedCategory;
+        }
+
+        return new SdkModels.Item(
+            name: item.Name,
+            unitAmount: unitAmount,
+            quantity: item.Quantity,
+            tax: MapMoneyToServerSdk(item.Tax),
+            description: item.Description,
+            sku: item.Sku,
+            url: item.Url,
+            category: category,
+            imageUrl: item.ImageUrl,
+            upc: item.Upc is null
+                ? null
+                : new SdkModels.UniversalProductCode(
+                    type: item.Upc.Type,
+                    value: item.Upc.Value),
+            billingPlan: null);
+    }
+
+    private static SdkModels.ShippingDetails MapShippingToServerSdk(Shipping shipping)
+    {
+        if (shipping is null)
+            return null;
+
+        SdkModels.FulfillmentType? type = null;
+        if (!string.IsNullOrEmpty(shipping.Type) &&
+            Enum.TryParse(shipping.Type, ignoreCase: true, out SdkModels.FulfillmentType parsedType))
+        {
+            type = parsedType;
+        }
+
+        var options = shipping.Options?
+            .Select(MapShippingOptionToServerSdk)
+            .Where(option => option is not null)
+            .ToList();
+
+        return new SdkModels.ShippingDetails(
+            name: shipping.Name is null ? null : new SdkModels.ShippingName(shipping.Name.FullName),
+            emailAddress: null,
+            phoneNumber: null,
+            type: type,
+            options: options,
+            address: MapAddressToServerSdk(shipping.Address));
+    }
+
+    private static SdkModels.ShippingOption MapShippingOptionToServerSdk(ShippingOption option)
+    {
+        if (option is null || string.IsNullOrEmpty(option.Id) || string.IsNullOrEmpty(option.Label))
+            return null;
+
+        SdkModels.ShippingType? type = null;
+        if (!string.IsNullOrEmpty(option.Type) &&
+            Enum.TryParse(option.Type, ignoreCase: true, out SdkModels.ShippingType parsedType))
+        {
+            type = parsedType;
+        }
+
+        return new SdkModels.ShippingOption(
+            id: option.Id,
+            label: option.Label,
+            selected: option.Selected ?? false,
+            type: type,
+            amount: MapMoneyToServerSdk(option.Amount));
+    }
+
+    private static SdkModels.Address MapAddressToServerSdk(Address address)
+    {
+        if (address is null || string.IsNullOrEmpty(address.CountryCode))
+            return null;
+
+        return new SdkModels.Address(
+            countryCode: address.CountryCode,
+            addressLine1: address.AddressLine1,
+            addressLine2: address.AddressLine2,
+            adminArea2: address.AdminArea2,
+            adminArea1: address.AdminArea1,
+            postalCode: address.PostalCode);
+    }
+
+    private static SdkModels.SupplementaryData MapSupplementaryDataToServerSdk(SupplementaryData supplementary)
+    {
+        if (supplementary?.Card is null)
+            return null;
+
+        var level2 = supplementary.Card.Level2 is null
+            ? null
+            : new SdkModels.Level2CardProcessingData(
+                invoiceId: supplementary.Card.Level2.InvoiceId,
+                taxTotal: MapMoneyToServerSdk(supplementary.Card.Level2.TaxTotal));
+
+        var level3 = supplementary.Card.Level3 is null
+            ? null
+            : new SdkModels.Level3CardProcessingData(
+                shippingAmount: MapMoneyToServerSdk(supplementary.Card.Level3.ShippingAmount),
+                dutyAmount: MapMoneyToServerSdk(supplementary.Card.Level3.DutyAmount),
+                discountAmount: MapMoneyToServerSdk(supplementary.Card.Level3.DiscountAmount),
+                shippingAddress: MapAddressToServerSdk(supplementary.Card.Level3.ShippingAddress),
+                shipsFromPostalCode: supplementary.Card.Level3.ShipsFromPostalCode,
+                lineItems: supplementary.Card.Level3.LineItems?
+                    .Select(MapItemToServerSdk)
+                    .Where(item => item is not null)
+                    .ToList());
+
+        var cardSupplementary = new SdkModels.CardSupplementaryData(
+            level2: level2,
+            level3: level3);
+
+        return new SdkModels.SupplementaryData(card: cardSupplementary);
+    }
+
+    private static SdkModels.PaymentSource MapPaymentSourceToServerSdk(PaymentSource source)
+    {
+        if (source is null)
+            return null;
+
+        var result = new SdkModels.PaymentSource();
+
+        if (source.Card is not null)
+            result.Card = MapCardToServerSdk(source.Card);
+
+        if (source.PayPal is not null)
+            result.Paypal = MapPaypalWalletToServerSdk(source.PayPal);
+
+        if (source.Venmo is not null)
+            result.Venmo = MapVenmoWalletToServerSdk(source.Venmo);
+
+        return result;
+    }
+
+    private static SdkModels.CardRequest MapCardToServerSdk(Nop.Plugin.Payments.PayPalCommerce.Services.Api.Models.PaymentSources.Card card)
+    {
+        if (card is null)
+            return null;
+
+        return new SdkModels.CardRequest(
+            name: card.Name,
+            number: card.Number,
+            expiry: card.Expiry,
+            securityCode: card.SecurityCode,
+            billingAddress: MapAddressToServerSdk(card.BillingAddress),
+            attributes: MapCardAttributesToServerSdk(card.Attributes),
+            vaultId: card.VaultId,
+            singleUseToken: null,
+            storedCredential: MapCardStoredCredentialToServerSdk(card.StoredCredential),
+            networkToken: card.NetworkToken is null
+                ? null
+                : new SdkModels.NetworkToken(
+                    id: card.NetworkToken.Id,
+                    type: card.NetworkToken.Type,
+                    lastDigits: card.NetworkToken.LastDigits,
+                    expiry: card.NetworkToken.Expiry),
+            experienceContext: card.ExperienceContext is null
+                ? null
+                : new SdkModels.CardExperienceContext(
+                    returnUrl: card.ExperienceContext.ReturnUrl,
+                    cancelUrl: card.ExperienceContext.CancelUrl));
+    }
+
+    private static SdkModels.CardAttributes MapCardAttributesToServerSdk(Attributes attributes)
+    {
+        if (attributes is null)
+            return null;
+
+        var customer = attributes.Customer is null
+            ? null
+            : new SdkModels.CardCustomerInformation(
+                id: attributes.Customer.Id,
+                emailAddress: attributes.Customer.EmailAddress,
+                phone: null,
+                name: MapNameToServerSdk(attributes.Customer.Name),
+                merchantCustomerId: attributes.Customer.MerchantCustomerId);
+
+        var vaultInstruction = attributes.Vault is null
+            ? null
+            : new SdkModels.VaultInstructionBase(
+                storeInVault: MapStoreInVaultInstruction(attributes.Vault.StoreInVault));
+
+        var verification = attributes.Verification is null
+            ? null
+            : new SdkModels.CardVerification(
+                method: MapCardVerificationMethod(attributes.Verification.Method));
+
+        return new SdkModels.CardAttributes(
+            customer: customer,
+            vault: vaultInstruction,
+            verification: verification);
+    }
+
+    private static SdkModels.StoreInVaultInstruction? MapStoreInVaultInstruction(string value)
+    {
+        if (string.IsNullOrEmpty(value))
+            return null;
+
+        return Enum.TryParse(value, ignoreCase: true, out SdkModels.StoreInVaultInstruction parsed)
+            ? parsed
+            : null;
+    }
+
+    private static SdkModels.OrdersCardVerificationMethod? MapCardVerificationMethod(string value)
+    {
+        if (string.IsNullOrEmpty(value))
+            return null;
+
+        return Enum.TryParse(value, ignoreCase: true, out SdkModels.OrdersCardVerificationMethod parsed)
+            ? parsed
+            : null;
+    }
+
+    private static SdkModels.CardStoredCredential MapCardStoredCredentialToServerSdk(StoredCredential stored)
+    {
+        if (stored is null ||
+            string.IsNullOrEmpty(stored.PaymentInitiator) ||
+            string.IsNullOrEmpty(stored.PaymentType))
+        {
+            return null;
+        }
+
+        if (!Enum.TryParse(stored.PaymentInitiator, ignoreCase: true, out SdkModels.PaymentInitiator initiator))
+            initiator = SdkModels.PaymentInitiator.Customer;
+
+        if (!Enum.TryParse(stored.PaymentType, ignoreCase: true, out SdkModels.StoredPaymentSourcePaymentType paymentType))
+            paymentType = SdkModels.StoredPaymentSourcePaymentType.OneTime;
+
+        SdkModels.StoredPaymentSourceUsageType? usage = null;
+        if (!string.IsNullOrEmpty(stored.Usage) &&
+            Enum.TryParse(stored.Usage, ignoreCase: true, out SdkModels.StoredPaymentSourceUsageType usageParsed))
+        {
+            usage = usageParsed;
+        }
+
+        var previousNetworkTransaction = stored.PreviousNetworkTransactionReference is null
+            ? null
+            : new SdkModels.NetworkTransaction(
+                id: stored.PreviousNetworkTransactionReference.Id,
+                date: stored.PreviousNetworkTransactionReference.Date,
+                acquirerTransactionId: stored.PreviousNetworkTransactionReference.AcquirerTransactionId,
+                network: stored.PreviousNetworkTransactionReference.Network);
+
+        return new SdkModels.CardStoredCredential(
+            paymentInitiator: initiator,
+            paymentType: paymentType,
+            usage: usage,
+            previousNetworkTransactionReference: previousNetworkTransaction);
+    }
+
+    private static SdkModels.PaypalWallet MapPaypalWalletToServerSdk(Nop.Plugin.Payments.PayPalCommerce.Services.Api.Models.PaymentSources.PayPal wallet)
+    {
+        if (wallet is null)
+            return null;
+
+        return new SdkModels.PaypalWallet(
+            vaultId: wallet.VaultId,
+            emailAddress: wallet.EmailAddress,
+            name: MapNameToServerSdk(wallet.Name),
+            phone: null,
+            birthDate: wallet.BirthDate,
+            taxInfo: null,
+            address: MapAddressToServerSdk(wallet.Address),
+            attributes: MapPaypalWalletAttributesToServerSdk(wallet.Attributes),
+            experienceContext: MapPaypalExperienceContextToServerSdk(wallet.ExperienceContext),
+            billingAgreementId: wallet.BillingAgreementId,
+            storedCredential: null);
+    }
+
+    private static SdkModels.Name MapNameToServerSdk(Name name)
+    {
+        if (name is null)
+            return null;
+
+        return new SdkModels.Name(
+            givenName: name.GivenName,
+            surname: name.Surname);
+    }
+
+    private static SdkModels.PaypalWalletAttributes MapPaypalWalletAttributesToServerSdk(Attributes attributes)
+    {
+        if (attributes is null)
+            return null;
+
+        var customer = attributes.Customer is null
+            ? null
+            : new SdkModels.PaypalWalletCustomerRequest(
+                id: attributes.Customer.Id,
+                emailAddress: attributes.Customer.EmailAddress,
+                phone: null,
+                name: MapNameToServerSdk(attributes.Customer.Name),
+                merchantCustomerId: attributes.Customer.MerchantCustomerId);
+
+        var vaultInstruction = attributes.Vault is null
+            ? null
+            : MapPaypalVaultInstructionToServerSdk(attributes.Vault as VaultInstruction);
+
+        return new SdkModels.PaypalWalletAttributes(
+            customer: customer,
+            vault: vaultInstruction);
+    }
+
+    private static SdkModels.PaypalWalletVaultInstruction MapPaypalVaultInstructionToServerSdk(VaultInstruction instruction)
+    {
+        if (instruction is null)
+            return null;
+
+        var storeInVault = MapStoreInVaultInstruction(instruction.StoreInVault);
+
+        SdkModels.UsagePattern? usagePattern = null;
+        if (!string.IsNullOrEmpty(instruction.UsagePattern) &&
+            Enum.TryParse(instruction.UsagePattern, ignoreCase: true, out SdkModels.UsagePattern usageParsed))
+        {
+            usagePattern = usageParsed;
+        }
+
+        var usageType = instruction.UsageType?.ToUpperInvariant() switch
+        {
+            nameof(VaultUsageType.MERCHANT) => SdkModels.PaypalPaymentTokenUsageType.Merchant,
+            nameof(VaultUsageType.PLATFORM) => SdkModels.PaypalPaymentTokenUsageType.Platform,
+            _ => SdkModels.PaypalPaymentTokenUsageType.Merchant
+        };
+
+        SdkModels.PaypalPaymentTokenCustomerType? customerType = instruction.CustomerType?.ToUpperInvariant() switch
+        {
+            nameof(VaultUsageType.CONSUMER) => SdkModels.PaypalPaymentTokenCustomerType.Consumer,
+            nameof(VaultUsageType.BUSINESS) => SdkModels.PaypalPaymentTokenCustomerType.Business,
+            _ => null
+        };
+
+        return new SdkModels.PaypalWalletVaultInstruction(
+            usageType: usageType,
+            storeInVault: storeInVault,
+            description: instruction.Description,
+            usagePattern: usagePattern,
+            customerType: customerType,
+            permitMultiplePaymentTokens: instruction.PermitMultiplePaymentTokens);
+    }
+
+    private static SdkModels.PaypalWalletExperienceContext MapPaypalExperienceContextToServerSdk(ExperienceContext context)
+    {
+        if (context is null)
+            return null;
+
+        SdkModels.PaypalWalletContextShippingPreference? shippingPreference = null;
+        if (!string.IsNullOrEmpty(context.ShippingPreference) &&
+            Enum.TryParse(context.ShippingPreference, ignoreCase: true, out SdkModels.PaypalWalletContextShippingPreference shippingParsed))
+        {
+            shippingPreference = shippingParsed;
+        }
+
+        SdkModels.PaypalExperienceLandingPage? landingPage = null;
+        if (!string.IsNullOrEmpty(context.LandingPage) &&
+            Enum.TryParse(context.LandingPage, ignoreCase: true, out SdkModels.PaypalExperienceLandingPage landingParsed))
+        {
+            landingPage = landingParsed;
+        }
+
+        SdkModels.PaypalExperienceUserAction? userAction = null;
+        if (!string.IsNullOrEmpty(context.UserAction) &&
+            Enum.TryParse(context.UserAction, ignoreCase: true, out SdkModels.PaypalExperienceUserAction userParsed))
+        {
+            userAction = userParsed;
+        }
+
+        SdkModels.PayeePaymentMethodPreference? paymentMethodPreference = null;
+        if (!string.IsNullOrEmpty(context.PaymentMethodPreference) &&
+            Enum.TryParse(context.PaymentMethodPreference, ignoreCase: true, out SdkModels.PayeePaymentMethodPreference methodParsed))
+        {
+            paymentMethodPreference = methodParsed;
+        }
+
+        return new SdkModels.PaypalWalletExperienceContext(
+            brandName: context.BrandName,
+            locale: context.Locale,
+            shippingPreference: shippingPreference,
+            contactPreference: null,
+            returnUrl: context.ReturnUrl,
+            cancelUrl: context.CancelUrl,
+            appSwitchContext: null,
+            landingPage: landingPage,
+            userAction: userAction,
+            paymentMethodPreference: paymentMethodPreference,
+            orderUpdateCallbackConfig: null);
+    }
+
+    private static SdkModels.VenmoWalletRequest MapVenmoWalletToServerSdk(Nop.Plugin.Payments.PayPalCommerce.Services.Api.Models.PaymentSources.Venmo venmo)
+    {
+        if (venmo is null)
+            return null;
+
+        return new SdkModels.VenmoWalletRequest(
+            vaultId: venmo.VaultId,
+            emailAddress: venmo.EmailAddress,
+            experienceContext: new SdkModels.VenmoWalletExperienceContext(
+                brandName: venmo.ExperienceContext?.BrandName,
+                shippingPreference: null,
+                orderUpdateCallbackConfig: null,
+                userAction: null),
+            attributes: new SdkModels.VenmoWalletAdditionalAttributes(
+                customer: venmo.Attributes?.Customer is null
+                    ? null
+                    : new SdkModels.VenmoWalletCustomerInformation(
+                        id: venmo.Attributes.Customer.Id,
+                        emailAddress: venmo.Attributes.Customer.EmailAddress,
+                        phone: null,
+                        name: MapNameToServerSdk(venmo.Attributes.Customer.Name),
+                        merchantCustomerId: venmo.Attributes.Customer.MerchantCustomerId),
+                vault: venmo.Attributes?.Vault is null
+                    ? null
+                    : new SdkModels.VenmoWalletVaultAttributes(
+                        storeInVault: MapStoreInVaultInstruction(venmo.Attributes.Vault.StoreInVault),
+                        description: venmo.Attributes.Vault.Description,
+                        usagePattern: null,
+                        usageType: null,
+                        customerType: null,
+                        permitMultiplePaymentTokens: venmo.Attributes.Vault.PermitMultiplePaymentTokens)));
+    }
+
+    private static Order MapOrderFromServerSdk(SdkModels.Order sdkOrder)
+    {
+        if (sdkOrder is null)
+            return null;
+
+        return new Order
+        {
+            CreateTime = sdkOrder.CreateTime,
+            UpdateTime = sdkOrder.UpdateTime,
+            Id = sdkOrder.Id,
+            Status = sdkOrder.Status?.ToString(),
+            Intent = sdkOrder.Intent?.ToString(),
+            Links = sdkOrder.Links?
+                .Select(link => new Link
+                {
+                    Href = link.Href,
+                    Rel = link.Rel,
+                    Method = link.Method?.ToString()
+                })
+                .ToList()
+        };
+    }
+
+    private static PaypalServerSdkClient CreatePaypalServerSdkClient(PayPalCommerceSettings settings)
+    {
+        var environment = settings.UseSandbox
+            ? PaypalServerSdk.Standard.Environment.Sandbox
+            : PaypalServerSdk.Standard.Environment.Production;
+
+        var credentials = new ClientCredentialsAuthModel.Builder(
+            settings.ClientId,
+            settings.SecretKey
+        ).Build();
+
+        var builder = new PaypalServerSdkClient.Builder()
+            .ClientCredentialsAuth(credentials)
+            .Environment(environment);
+
+        if (settings.RequestTimeout.HasValue && settings.RequestTimeout.Value > 0)
+        {
+            builder.HttpClientConfig(config =>
+            {
+                config.Timeout(TimeSpan.FromSeconds(settings.RequestTimeout.Value));
+            });
+        }
+
+        return builder.Build();
     }
 
     /// <summary>
