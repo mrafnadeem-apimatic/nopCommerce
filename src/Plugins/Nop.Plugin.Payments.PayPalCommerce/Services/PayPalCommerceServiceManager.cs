@@ -1,4 +1,4 @@
-using System.Globalization;
+﻿using System.Globalization;
 using System.Security.Cryptography;
 using System.Text;
 using Microsoft.AspNetCore.WebUtilities;
@@ -44,10 +44,12 @@ using Nop.Services.Stores;
 using Nop.Services.Tax;
 using Nop.Web.Framework.Mvc.Routing;
 using Address = Nop.Plugin.Payments.PayPalCommerce.Services.Api.Models.Address;
+using Environment = System.Environment;
 using NopAddress = Nop.Core.Domain.Common.Address;
 using NopOrder = Nop.Core.Domain.Orders.Order;
 using NopShippingOption = Nop.Core.Domain.Shipping.ShippingOption;
 using Order = Nop.Plugin.Payments.PayPalCommerce.Services.Api.Models.Order;
+using PaymentType = Nop.Plugin.Payments.PayPalCommerce.Domain.PaymentType;
 using ShippingOption = Nop.Plugin.Payments.PayPalCommerce.Services.Api.Models.ShippingOption;
 
 namespace Nop.Plugin.Payments.PayPalCommerce.Services;
@@ -1853,10 +1855,10 @@ public class PayPalCommerceServiceManager
             prefer: "return=representation");
 
         var response = await client.OrdersController.CreateOrderAsync(input);
-        if (response?.Result is null)
+        if (response?.Data is null)
             throw new NopException("Failed to read PayPal order data.");
 
-        var sdkOrder = response.Result;
+        var sdkOrder = response.Data;
         var order = MapOrderFromServerSdk(sdkOrder);
         if (order is null)
             throw new NopException("Failed to map PayPal order response.");
@@ -1955,6 +1957,11 @@ public class PayPalCommerceServiceManager
             category = parsedCategory;
         }
 
+        if (!Enum.TryParse<SdkModels.UpcType>(item.Upc.Type, out var upcType))
+        {
+            throw new NopException("Invalid UniversalProductCode Type!");
+        }
+
         return new SdkModels.Item(
             name: item.Name,
             unitAmount: unitAmount,
@@ -1968,8 +1975,8 @@ public class PayPalCommerceServiceManager
             upc: item.Upc is null
                 ? null
                 : new SdkModels.UniversalProductCode(
-                    type: item.Upc.Type,
-                    value: item.Upc.Value),
+                    type: upcType,
+                    code: item.Upc.Code),
             billingPlan: null);
     }
 
