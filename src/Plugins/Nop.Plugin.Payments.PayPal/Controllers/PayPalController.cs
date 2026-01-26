@@ -76,7 +76,8 @@ public class PayPalController : BasePublicController
                 $"PayPal return token mismatch for order #{order.Id}",
                 $"Received token '{token}' but stored PayPal order id is '{payPalOrderId}'.");
 
-            //do not attempt to capture a mismatched token; continue using the stored id
+            // do not attempt to capture a mismatched token; treat checkout as not successfully completed
+            return RedirectToRoute(NopRouteNames.Standard.CHECKOUT_COMPLETED, new { orderId = order.Id });
         }
 
         try

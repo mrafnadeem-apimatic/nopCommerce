@@ -95,9 +95,14 @@ public class PayPalPaymentProcessor : BasePlugin, IPaymentMethod
         order.AuthorizationTransactionId = orderId;
         await _orderService.UpdateOrderAsync(order);
 
-        await _logger.InsertLogAsync(LogLevel.Information,
+        // avoid logging the full approval URL, since it may contain sensitive tokens
+        var approvalUri = new Uri(approvalUrl);
+        var redactedApprovalUrl = approvalUri.GetLeftPart(UriPartial.Path);
+
+        await _logger.InsertLogAsync(
+            LogLevel.Information,
             $"Redirecting to PayPal for order #{order.Id} (PayPal order {orderId})",
-            approvalUrl);
+            $"Redirecting to PayPal. Approval URL (redacted): {redactedApprovalUrl}");
 
         var httpContext = _httpContextAccessor.HttpContext
                            ?? throw new NopException("HTTP context is not available");

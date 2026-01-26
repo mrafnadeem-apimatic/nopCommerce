@@ -1,7 +1,9 @@
+using System;
 using System.Globalization;
 using System.Net.Http.Headers;
 using System.Text;
 using System.Text.Json;
+using System.Threading;
 using Nop.Core;
 using Nop.Core.Domain.Logging;
 using Nop.Core.Domain.Orders;
@@ -20,7 +22,9 @@ public class PayPalHttpClient
     private readonly ILogger _logger;
     private readonly PayPalPaymentSettings _settings;
 
+    private readonly SemaphoreSlim _tokenSemaphore = new(1, 1);
     private string _accessToken;
+    private DateTime? _accessTokenExpiresAt;
 
     #endregion
 
@@ -49,42 +53,76 @@ public class PayPalHttpClient
 
     protected virtual async Task<string> GetAccessTokenAsync()
     {
-        if (!string.IsNullOrEmpty(_accessToken))
+        // Fast path: return cached token if it exists and hasn't expired
+        if (!string.IsNullOrEmpty(_accessToken) &&
+            _accessTokenExpiresAt.HasValue &&
+            _accessTokenExpiresAt.Value > DateTime.UtcNow)
+        {
             return _accessToken;
-
-        if (string.IsNullOrEmpty(_settings.ClientId))
-            throw new NopException("PayPal client ID is not set");
-
-        if (string.IsNullOrEmpty(_settings.ClientSecret))
-            throw new NopException("PayPal client secret is not set");
-
-        var client = _httpClientFactory.CreateClient(PayPalDefaults.HttpClientName);
-        client.BaseAddress = new Uri(GetApiBaseUrl());
-
-        var credentials = $"{_settings.ClientId}:{_settings.ClientSecret}";
-        var credentialsBytes = Encoding.UTF8.GetBytes(credentials);
-        var authHeader = Convert.ToBase64String(credentialsBytes);
-
-        using var request = new HttpRequestMessage(HttpMethod.Post, "v1/oauth2/token");
-        request.Headers.Authorization = new AuthenticationHeaderValue("Basic", authHeader);
-        request.Content = new FormUrlEncodedContent(new[]
-        {
-            new KeyValuePair<string, string>("grant_type", "client_credentials")
-        });
-
-        var response = await client.SendAsync(request);
-        var content = await response.Content.ReadAsStringAsync();
-
-        if (!response.IsSuccessStatusCode)
-        {
-            await _logger.InsertLogAsync(LogLevel.Error, "PayPal OAuth error", content);
-            throw new NopException("PayPal OAuth error");
         }
 
-        using var document = JsonDocument.Parse(content);
-        _accessToken = document.RootElement.GetProperty("access_token").GetString();
+        await _tokenSemaphore.WaitAsync();
+        try
+        {
+            // Double-check under the lock to avoid redundant refresh
+            if (!string.IsNullOrEmpty(_accessToken) &&
+                _accessTokenExpiresAt.HasValue &&
+                _accessTokenExpiresAt.Value > DateTime.UtcNow)
+            {
+                return _accessToken;
+            }
 
-        return _accessToken;
+            if (string.IsNullOrEmpty(_settings.ClientId))
+                throw new NopException("PayPal client ID is not set");
+
+            if (string.IsNullOrEmpty(_settings.ClientSecret))
+                throw new NopException("PayPal client secret is not set");
+
+            var client = _httpClientFactory.CreateClient(PayPalDefaults.HttpClientName);
+            client.BaseAddress = new Uri(GetApiBaseUrl());
+
+            var credentials = $"{_settings.ClientId}:{_settings.ClientSecret}";
+            var credentialsBytes = Encoding.UTF8.GetBytes(credentials);
+            var authHeader = Convert.ToBase64String(credentialsBytes);
+
+            using var request = new HttpRequestMessage(HttpMethod.Post, "v1/oauth2/token");
+            request.Headers.Authorization = new AuthenticationHeaderValue("Basic", authHeader);
+            request.Content = new FormUrlEncodedContent(new[]
+            {
+                new KeyValuePair<string, string>("grant_type", "client_credentials")
+            });
+
+            var response = await client.SendAsync(request);
+            var content = await response.Content.ReadAsStringAsync();
+
+            if (!response.IsSuccessStatusCode)
+            {
+                await _logger.InsertLogAsync(LogLevel.Error, "PayPal OAuth error", content);
+                throw new NopException("PayPal OAuth error");
+            }
+
+            using var document = JsonDocument.Parse(content);
+            _accessToken = document.RootElement.GetProperty("access_token").GetString();
+
+            // Parse token lifetime (expires_in is in seconds) and compute expiration with a safety margin
+            if (document.RootElement.TryGetProperty("expires_in", out var expiresInElement) &&
+                expiresInElement.TryGetInt32(out var expiresInSeconds))
+            {
+                var effectiveLifetimeSeconds = Math.Max(0, expiresInSeconds - 60); // 60 sec safety margin
+                _accessTokenExpiresAt = DateTime.UtcNow.AddSeconds(effectiveLifetimeSeconds);
+            }
+            else
+            {
+                // Fallback if expires_in is missing: use a conservative default
+                _accessTokenExpiresAt = DateTime.UtcNow.AddMinutes(5);
+            }
+
+            return _accessToken;
+        }
+        finally
+        {
+            _tokenSemaphore.Release();
+        }
     }
 
     #endregion
@@ -197,8 +235,71 @@ public class PayPalHttpClient
 
         if (!response.IsSuccessStatusCode)
         {
-            await _logger.InsertLogAsync(LogLevel.Error,
+            await _logger.InsertLogAsync(
+                LogLevel.Error,
                 $"Error capturing PayPal order {payPalOrderId}",
+                content);
+            return false;
+        }
+
+        // Verify that the capture status is COMPLETED in the response payload
+        try
+        {
+            using var document = JsonDocument.Parse(content);
+            var root = document.RootElement;
+
+            var captureCompleted = false;
+
+            // Prefer top-level status if present
+            if (root.TryGetProperty("status", out var statusProperty))
+            {
+                if (string.Equals(statusProperty.GetString(), "COMPLETED", StringComparison.OrdinalIgnoreCase))
+                    captureCompleted = true;
+            }
+
+            // Fallback: inspect purchase_units[].payments.captures[].status
+            if (!captureCompleted &&
+                root.TryGetProperty("purchase_units", out var puElement) &&
+                puElement.ValueKind == JsonValueKind.Array)
+            {
+                foreach (var pu in puElement.EnumerateArray())
+                {
+                    if (!pu.TryGetProperty("payments", out var paymentsElement))
+                        continue;
+
+                    if (!paymentsElement.TryGetProperty("captures", out var capturesElement) ||
+                        capturesElement.ValueKind != JsonValueKind.Array)
+                        continue;
+
+                    foreach (var capture in capturesElement.EnumerateArray())
+                    {
+                        if (capture.TryGetProperty("status", out var capStatus) &&
+                            string.Equals(capStatus.GetString(), "COMPLETED", StringComparison.OrdinalIgnoreCase))
+                        {
+                            captureCompleted = true;
+                            break;
+                        }
+                    }
+
+                    if (captureCompleted)
+                        break;
+                }
+            }
+
+            if (!captureCompleted)
+            {
+                await _logger.InsertLogAsync(
+                    LogLevel.Error,
+                    $"PayPal capture for order {payPalOrderId} did not complete successfully. Response status OK but capture status was not COMPLETED.",
+                    content);
+                return false;
+            }
+        }
+        catch (Exception ex)
+        {
+            await _logger.InsertLogAsync(
+                LogLevel.Error,
+                $"Failed to parse PayPal capture response for order {payPalOrderId}: {ex.Message}",
                 content);
             return false;
         }
