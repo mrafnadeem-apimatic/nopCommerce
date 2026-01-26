@@ -1,4 +1,4 @@
-﻿using Newtonsoft.Json;
+using Newtonsoft.Json;
 
 namespace Nop.Plugin.Payments.PayPalCommerce.Services.Api.Models;
 
@@ -19,7 +19,7 @@ public class Attributes
     /// Gets or sets the instruction to vault the payment source based on the specified strategy.
     /// </summary>
     [JsonProperty(PropertyName = "vault")]
-    public Vault Vault { get; set; }
+    public VaultInstruction Vault { get; set; }
 
     /// <summary>
     /// Gets or sets the instruction to optionally verify the payment source based on the specified strategy.

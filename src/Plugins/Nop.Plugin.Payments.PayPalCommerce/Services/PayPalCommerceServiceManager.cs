@@ -1,4 +1,4 @@
-﻿using System.Globalization;
+using System.Globalization;
 using System.Security.Cryptography;
 using System.Text;
 using Microsoft.AspNetCore.WebUtilities;
@@ -1941,7 +1941,7 @@ public class PayPalCommerceServiceManager
             payeeReceivableFxRateId: instruction.PayeeReceivableFxRateId);
     }
 
-    private static SdkModels.Item MapItemToServerSdk(Item item)
+    private static SdkModels.ItemRequest MapItemToServerSdk(Item item)
     {
         if (item is null)
             return null;
@@ -1957,12 +1957,18 @@ public class PayPalCommerceServiceManager
             category = parsedCategory;
         }
 
-        if (!Enum.TryParse<SdkModels.UpcType>(item.Upc.Type, out var upcType))
+        SdkModels.UniversalProductCode upc = null;
+        if (item.Upc is not null)
         {
-            throw new NopException("Invalid UniversalProductCode Type!");
+            if (!Enum.TryParse<SdkModels.UpcType>(item.Upc.Type, out var upcType))
+                throw new NopException("Invalid UniversalProductCode Type!");
+
+            upc = new SdkModels.UniversalProductCode(
+                type: upcType,
+                code: item.Upc.Code);
         }
 
-        return new SdkModels.Item(
+        return new SdkModels.ItemRequest(
             name: item.Name,
             unitAmount: unitAmount,
             quantity: item.Quantity,
@@ -1972,12 +1978,45 @@ public class PayPalCommerceServiceManager
             url: item.Url,
             category: category,
             imageUrl: item.ImageUrl,
-            upc: item.Upc is null
-                ? null
-                : new SdkModels.UniversalProductCode(
-                    type: upcType,
-                    code: item.Upc.Code),
+            upc: upc,
             billingPlan: null);
+    }
+
+    private static SdkModels.LineItem MapLineItemToServerSdk(Item item)
+    {
+        if (item is null)
+            return null;
+
+        var unitAmount = MapMoneyToServerSdk(item.UnitAmount);
+        if (unitAmount is null || string.IsNullOrEmpty(item.Name) || string.IsNullOrEmpty(item.Quantity))
+            return null;
+
+        SdkModels.UniversalProductCode upc = null;
+        if (item.Upc is not null)
+        {
+            if (!Enum.TryParse<SdkModels.UpcType>(item.Upc.Type, out var upcType))
+                throw new NopException("Invalid UniversalProductCode Type!");
+
+            upc = new SdkModels.UniversalProductCode(
+                type: upcType,
+                code: item.Upc.Code);
+        }
+
+        return new SdkModels.LineItem(
+            name: item.Name,
+            quantity: item.Quantity,
+            description: item.Description,
+            sku: item.Sku,
+            url: item.Url,
+            imageUrl: item.ImageUrl,
+            upc: upc,
+            billingPlan: null,
+            unitAmount: unitAmount,
+            tax: MapMoneyToServerSdk(item.Tax),
+            commodityCode: item.CommodityCode,
+            discountAmount: MapMoneyToServerSdk(item.DiscountAmount),
+            totalAmount: MapMoneyToServerSdk(item.TotalAmount),
+            unitOfMeasure: item.UnitOfMeasure);
     }
 
     private static SdkModels.ShippingDetails MapShippingToServerSdk(Shipping shipping)
@@ -2060,7 +2099,7 @@ public class PayPalCommerceServiceManager
                 shippingAddress: MapAddressToServerSdk(supplementary.Card.Level3.ShippingAddress),
                 shipsFromPostalCode: supplementary.Card.Level3.ShipsFromPostalCode,
                 lineItems: supplementary.Card.Level3.LineItems?
-                    .Select(MapItemToServerSdk)
+                    .Select(MapLineItemToServerSdk)
                     .Where(item => item is not null)
                     .ToList());
 
@@ -2076,6 +2115,24 @@ public class PayPalCommerceServiceManager
         if (card is null)
             return null;
 
+        SdkModels.NetworkToken sdkNetworkToken = null;
+        if (card.NetworkToken is not null)
+        {
+            SdkModels.EciFlag? eciFlag = null;
+            if (!string.IsNullOrEmpty(card.NetworkToken.EciFlag) &&
+                Enum.TryParse(card.NetworkToken.EciFlag, ignoreCase: true, out SdkModels.EciFlag parsedEci))
+            {
+                eciFlag = parsedEci;
+            }
+
+            sdkNetworkToken = new SdkModels.NetworkToken(
+                number: card.NetworkToken.Number,
+                expiry: card.NetworkToken.Expiry,
+                cryptogram: card.NetworkToken.Cryptogram,
+                eciFlag: eciFlag,
+                tokenRequestorId: card.NetworkToken.TokenRequestorId);
+        }
+
         return new SdkModels.CardRequest(
             name: card.Name,
             number: card.Number,
@@ -2086,13 +2143,7 @@ public class PayPalCommerceServiceManager
             vaultId: card.VaultId,
             singleUseToken: null,
             storedCredential: MapCardStoredCredentialToServerSdk(card.StoredCredential),
-            networkToken: card.NetworkToken is null
-                ? null
-                : new SdkModels.NetworkToken(
-                    id: card.NetworkToken.Id,
-                    type: card.NetworkToken.Type,
-                    lastDigits: card.NetworkToken.LastDigits,
-                    expiry: card.NetworkToken.Expiry),
+            networkToken: sdkNetworkToken,
             experienceContext: card.ExperienceContext is null
                 ? null
                 : new SdkModels.CardExperienceContext(
@@ -2172,13 +2223,22 @@ public class PayPalCommerceServiceManager
             usage = usageParsed;
         }
 
-        var previousNetworkTransaction = stored.PreviousNetworkTransactionReference is null
-            ? null
-            : new SdkModels.NetworkTransaction(
+        SdkModels.NetworkTransaction previousNetworkTransaction = null;
+        if (stored.PreviousNetworkTransactionReference is not null)
+        {
+            SdkModels.CardBrand? network = null;
+            if (!string.IsNullOrEmpty(stored.PreviousNetworkTransactionReference.Network) &&
+                Enum.TryParse(stored.PreviousNetworkTransactionReference.Network, ignoreCase: true, out SdkModels.CardBrand parsedBrand))
+            {
+                network = parsedBrand;
+            }
+
+            previousNetworkTransaction = new SdkModels.NetworkTransaction(
                 id: stored.PreviousNetworkTransactionReference.Id,
                 date: stored.PreviousNetworkTransactionReference.Date,
-                acquirerTransactionId: stored.PreviousNetworkTransactionReference.AcquirerTransactionId,
-                network: stored.PreviousNetworkTransactionReference.Network);
+                network: network,
+                acquirerReferenceNumber: stored.PreviousNetworkTransactionReference.AcquirerReferenceNumber);
+        }
 
         return new SdkModels.CardStoredCredential(
             paymentInitiator: initiator,
@@ -2244,8 +2304,6 @@ public class PayPalCommerceServiceManager
         if (instruction is null)
             return null;
 
-        var storeInVault = MapStoreInVaultInstruction(instruction.StoreInVault);
-
         SdkModels.UsagePattern? usagePattern = null;
         if (!string.IsNullOrEmpty(instruction.UsagePattern) &&
             Enum.TryParse(instruction.UsagePattern, ignoreCase: true, out SdkModels.UsagePattern usageParsed))
@@ -2267,13 +2325,13 @@ public class PayPalCommerceServiceManager
             _ => null
         };
 
-        return new SdkModels.PaypalWalletVaultInstruction(
-            usageType: usageType,
-            storeInVault: storeInVault,
-            description: instruction.Description,
-            usagePattern: usagePattern,
-            customerType: customerType,
-            permitMultiplePaymentTokens: instruction.PermitMultiplePaymentTokens);
+        return new SdkModels.PaypalWalletVaultInstruction(usageType: usageType)
+        {
+            Description = instruction.Description,
+            UsagePattern = usagePattern,
+            CustomerType = customerType,
+            PermitMultiplePaymentTokens = instruction.PermitMultiplePaymentTokens
+        };
     }
 
     private static SdkModels.PaypalWalletExperienceContext MapPaypalExperienceContextToServerSdk(ExperienceContext context)
@@ -2343,17 +2401,47 @@ public class PayPalCommerceServiceManager
                         id: venmo.Attributes.Customer.Id,
                         emailAddress: venmo.Attributes.Customer.EmailAddress,
                         phone: null,
-                        name: MapNameToServerSdk(venmo.Attributes.Customer.Name),
-                        merchantCustomerId: venmo.Attributes.Customer.MerchantCustomerId),
+                        name: MapNameToServerSdk(venmo.Attributes.Customer.Name)),
                 vault: venmo.Attributes?.Vault is null
                     ? null
-                    : new SdkModels.VenmoWalletVaultAttributes(
-                        storeInVault: MapStoreInVaultInstruction(venmo.Attributes.Vault.StoreInVault),
-                        description: venmo.Attributes.Vault.Description,
-                        usagePattern: null,
-                        usageType: null,
-                        customerType: null,
-                        permitMultiplePaymentTokens: venmo.Attributes.Vault.PermitMultiplePaymentTokens)));
+                    : MapVenmoVaultAttributesToServerSdk(venmo.Attributes.Vault)));
+    }
+
+    private static SdkModels.VenmoWalletVaultAttributes MapVenmoVaultAttributesToServerSdk(VaultInstruction instruction)
+    {
+        if (instruction is null)
+            return null;
+
+        var storeInVault = MapStoreInVaultInstruction(instruction.StoreInVault) ?? SdkModels.StoreInVaultInstruction.OnSuccess;
+
+        SdkModels.VenmoPaymentTokenUsagePattern? usagePattern = null;
+        if (!string.IsNullOrEmpty(instruction.UsagePattern) &&
+            Enum.TryParse(instruction.UsagePattern, ignoreCase: true, out SdkModels.VenmoPaymentTokenUsagePattern usagePatternParsed))
+        {
+            usagePattern = usagePatternParsed;
+        }
+
+        var usageType = instruction.UsageType?.ToUpperInvariant() switch
+        {
+            nameof(VaultUsageType.MERCHANT) => SdkModels.VenmoPaymentTokenUsageType.Merchant,
+            nameof(VaultUsageType.PLATFORM) => SdkModels.VenmoPaymentTokenUsageType.Platform,
+            _ => SdkModels.VenmoPaymentTokenUsageType.Merchant
+        };
+
+        SdkModels.VenmoPaymentTokenCustomerType? customerType = instruction.CustomerType?.ToUpperInvariant() switch
+        {
+            nameof(VaultUsageType.CONSUMER) => SdkModels.VenmoPaymentTokenCustomerType.Consumer,
+            nameof(VaultUsageType.BUSINESS) => SdkModels.VenmoPaymentTokenCustomerType.Business,
+            _ => null
+        };
+
+        return new SdkModels.VenmoWalletVaultAttributes(
+            storeInVault: storeInVault,
+            usageType: usageType,
+            description: instruction.Description,
+            usagePattern: usagePattern,
+            customerType: customerType,
+            permitMultiplePaymentTokens: instruction.PermitMultiplePaymentTokens);
     }
 
     private static Order MapOrderFromServerSdk(SdkModels.Order sdkOrder)
