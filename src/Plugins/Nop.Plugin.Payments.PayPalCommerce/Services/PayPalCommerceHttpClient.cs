@@ -40,6 +40,10 @@ public class PayPalCommerceHttpClient
 
     #region Ctor
 
+    /// <summary>
+    /// Initializes a new instance of the <see cref="PayPalCommerceHttpClient"/> class.
+    /// </summary>
+    /// <param name="httpClient">The HTTP client used to send requests to PayPal endpoints.</param>
     public PayPalCommerceHttpClient(HttpClient httpClient)
     {
         _httpClient = httpClient;
@@ -105,6 +109,17 @@ public class PayPalCommerceHttpClient
             .Build();
     }
 
+    /// <summary>
+    /// Executes a PayPal Server SDK call and maps the response to the corresponding plugin response type.
+    /// </summary>
+    /// <typeparam name="TPluginResponse">Type of the response model used by the plugin.</typeparam>
+    /// <typeparam name="TSdkResponse">Type of the underlying PayPal SDK response.</typeparam>
+    /// <param name="settings">Plugin settings used to configure the SDK client.</param>
+    /// <param name="call">Delegate that performs the SDK call and returns a typed API response.</param>
+    /// <returns>
+    /// A task that represents the asynchronous operation.
+    /// The task result contains the mapped plugin response.
+    /// </returns>
     private static async Task<TPluginResponse> ExecuteSdkCallAsync<TPluginResponse, TSdkResponse>(
         PayPalCommerceSettings settings,
         Func<PaypalServerSdkClient, Task<ApiResponse<TSdkResponse>>> call)
@@ -139,6 +154,12 @@ public class PayPalCommerceHttpClient
         }
     }
 
+    /// <summary>
+    /// Executes a PayPal Server SDK call that does not return a response body.
+    /// </summary>
+    /// <param name="settings">Plugin settings used to configure the SDK client.</param>
+    /// <param name="call">Delegate that performs the SDK call.</param>
+    /// <returns>A task that represents the asynchronous operation.</returns>
     private static async Task ExecuteSdkCallAsync(
         PayPalCommerceSettings settings,
         Func<PaypalServerSdkClient, Task> call)
@@ -156,6 +177,11 @@ public class PayPalCommerceHttpClient
         }
     }
 
+    /// <summary>
+    /// Builds a detailed error message from the specified PayPal API exception.
+    /// </summary>
+    /// <param name="ex">The API exception thrown by the PayPal Server SDK.</param>
+    /// <returns>A string that contains the base error message and any additional error details, if available.</returns>
     private static string BuildApiExceptionMessage(ApiException ex)
     {
         var message = ex.Message;
