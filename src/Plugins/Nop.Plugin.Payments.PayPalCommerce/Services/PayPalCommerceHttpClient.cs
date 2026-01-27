@@ -134,22 +134,7 @@ public class PayPalCommerceHttpClient
         }
         catch (ApiException ex)
         {
-            var message = ex.Message;
-
-            if (ex is ErrorException errorException)
-            {
-                var errorDetails = new
-                {
-                    errorException.Name,
-                    errorException.Message,
-                    errorException.DebugId,
-                    errorException.Details,
-                    errorException.Links
-                };
-
-                message += $"{Environment.NewLine}{JsonConvert.SerializeObject(errorDetails, Formatting.Indented)}";
-            }
-
+            var message = BuildApiExceptionMessage(ex);
             throw new NopException("Failed request", new NopException(message));
         }
     }
@@ -166,24 +151,30 @@ public class PayPalCommerceHttpClient
         }
         catch (ApiException ex)
         {
-            var message = ex.Message;
-
-            if (ex is ErrorException errorException)
-            {
-                var errorDetails = new
-                {
-                    errorException.Name,
-                    errorException.Message,
-                    errorException.DebugId,
-                    errorException.Details,
-                    errorException.Links
-                };
-
-                message += $"{Environment.NewLine}{JsonConvert.SerializeObject(errorDetails, Formatting.Indented)}";
-            }
-
+            var message = BuildApiExceptionMessage(ex);
             throw new NopException("Failed request", new NopException(message));
         }
+    }
+
+    private static string BuildApiExceptionMessage(ApiException ex)
+    {
+        var message = ex.Message;
+
+        if (ex is ErrorException errorException)
+        {
+            var errorDetails = new
+            {
+                errorException.Name,
+                errorException.Message,
+                errorException.DebugId,
+                errorException.Details,
+                errorException.Links
+            };
+
+            message += $"{Environment.NewLine}{JsonConvert.SerializeObject(errorDetails, Formatting.Indented)}";
+        }
+
+        return message;
     }
 
     #endregion
