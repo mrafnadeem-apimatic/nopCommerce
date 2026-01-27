@@ -30,6 +30,9 @@ public class PayPalHttpClient
 
     #region Ctor
 
+    /// <summary>
+    /// Initializes a new instance of <see cref="PayPalHttpClient"/> with the required HTTP factory, logger, and PayPal settings.
+    /// </summary>
     public PayPalHttpClient(
         IHttpClientFactory httpClientFactory,
         ILogger logger,
@@ -44,6 +47,10 @@ public class PayPalHttpClient
 
     #region Utilities
 
+    /// <summary>
+    /// Selects the PayPal API base URL according to the current sandbox setting.
+    /// </summary>
+    /// <returns>The configured PayPal API base URL: the sandbox URL when sandbox mode is enabled, otherwise the live URL.</returns>
     protected virtual string GetApiBaseUrl()
     {
         return _settings.UseSandbox
@@ -51,6 +58,11 @@ public class PayPalHttpClient
             : PayPalDefaults.LiveApiBaseUrl;
     }
 
+    /// <summary>
+    /// Retrieves and caches a PayPal OAuth access token using configured client credentials.
+    /// </summary>
+    /// <returns>The cached or newly obtained access token string.</returns>
+    /// <exception cref="NopException">Thrown when the PayPal client ID or client secret is not set, or when the OAuth request fails.</exception>
     protected virtual async Task<string> GetAccessTokenAsync()
     {
         // Fast path: return cached token if it exists and hasn't expired
@@ -135,7 +147,14 @@ public class PayPalHttpClient
     /// <param name="order">Nop order</param>
     /// <param name="returnUrl">Return URL</param>
     /// <param name="cancelUrl">Cancel URL</param>
-    /// <returns>PayPal order identifier and approval URL</returns>
+    /// <summary>
+    /// Creates a PayPal order for the specified nopCommerce order and returns the PayPal order ID and the approval URL.
+    /// </summary>
+    /// <param name="order">The nopCommerce order used to build the PayPal purchase unit.</param>
+    /// <param name="returnUrl">The URL to which PayPal redirects the buyer after they approve the payment.</param>
+    /// <param name="cancelUrl">The URL to which PayPal redirects the buyer if they cancel the payment.</param>
+    /// <returns>A tuple containing the PayPal order identifier (`orderId`) and the approval URL (`approvalUrl`).</returns>
+    /// <exception cref="NopException">Thrown when PayPal responds with an error or when the response does not contain an order ID or approval URL.</exception>
     public virtual async Task<(string orderId, string approvalUrl)> CreateOrderAsync(Order order, string returnUrl, string cancelUrl)
     {
         ArgumentNullException.ThrowIfNull(order);
@@ -212,7 +231,11 @@ public class PayPalHttpClient
     /// Capture PayPal order
     /// </summary>
     /// <param name="payPalOrderId">PayPal order id (token)</param>
-    /// <returns>True if captured successfully; otherwise false</returns>
+    /// <summary>
+    /// Captures payment for the specified PayPal order.
+    /// </summary>
+    /// <param name="payPalOrderId">The PayPal order identifier to capture.</param>
+    /// <returns><c>true</c> if the capture succeeded, <c>false</c> otherwise.</returns>
     public virtual async Task<bool> CaptureOrderAsync(string payPalOrderId)
     {
         if (string.IsNullOrEmpty(payPalOrderId))
@@ -309,5 +332,4 @@ public class PayPalHttpClient
 
     #endregion
 }
-
 

@@ -29,6 +29,9 @@ public class PaymentPayPalController : BasePaymentController
 
     #region Ctor
 
+    /// <summary>
+    /// Initializes a new instance of the <see cref="PaymentPayPalController"/> with required services.
+    /// </summary>
     public PaymentPayPalController(
         ILocalizationService localizationService,
         INotificationService notificationService,
@@ -47,6 +50,10 @@ public class PaymentPayPalController : BasePaymentController
 
     #region Methods
 
+    /// <summary>
+    /// Displays the PayPal payment plugin configuration view populated with the current store-scoped settings.
+    /// </summary>
+    /// <returns>An IActionResult rendering the PayPal Configure view with a ConfigurationModel containing the active store scope, setting values, and per-store override flags.</returns>
     [CheckPermission(StandardPermission.Configuration.MANAGE_PAYMENT_METHODS)]
     public async Task<IActionResult> Configure()
     {
@@ -76,6 +83,11 @@ public class PaymentPayPalController : BasePaymentController
         return View("~/Plugins/Payments.PayPal/Views/Configure.cshtml", model);
     }
 
+    /// <summary>
+    /// Persists PayPal configuration from the provided model for the active store scope and then redisplays the configuration page.
+    /// </summary>
+    /// <param name="model">ConfigurationModel containing PayPal client credentials, sandbox flag, additional fee values, and per-store override flags.</param>
+    /// <returns>An IActionResult that redisplays the configuration view; when the model is invalid the view shows validation errors.</returns>
     [HttpPost]
     [CheckPermission(StandardPermission.Configuration.MANAGE_PAYMENT_METHODS)]
     public async Task<IActionResult> Configure(ConfigurationModel model)
@@ -114,5 +126,4 @@ public class PaymentPayPalController : BasePaymentController
 
     #endregion
 }
-
 
