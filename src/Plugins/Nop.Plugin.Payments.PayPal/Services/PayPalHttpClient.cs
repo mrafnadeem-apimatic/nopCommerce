@@ -1,9 +1,7 @@
-using System;
-using System.Globalization;
+﻿using System.Globalization;
 using System.Net.Http.Headers;
 using System.Text;
 using System.Text.Json;
-using System.Threading;
 using Nop.Core;
 using Nop.Core.Domain.Logging;
 using Nop.Core.Domain.Orders;
@@ -21,6 +19,27 @@ public class PayPalHttpClient
     private readonly IHttpClientFactory _httpClientFactory;
     private readonly ILogger _logger;
     private readonly PayPalPaymentSettings _settings;
+
+    /// <summary>
+    /// ISO-4217 / CLDR currencies that use 0 minor units (no decimal places).
+    /// Derived from CLDR supplemental currencyData fractions (_digits = "0").
+    /// </summary>
+    private static readonly HashSet<string> ZeroDecimalCurrencies = new(StringComparer.OrdinalIgnoreCase)
+    {
+        "ADP", "AFN", "ALL", "BIF", "BYR", "CLP", "DJF", "ESP", "GNF", "IQD", "IRR",
+        "ISK", "ITL", "JPY", "KMF", "KPW", "KRW", "LAK", "LBP", "LUF", "MGA", "MGF",
+        "MMK", "MRO", "PYG", "RSD", "RWF", "SLL", "SOS", "STD", "SYP", "TMM", "TRL",
+        "UGX", "UYI", "VND", "VUV", "XAF", "XOF", "XPF", "YER", "ZMK", "ZWD"
+    };
+
+    /// <summary>
+    /// ISO-4217 / CLDR currencies that use 3 minor units.
+    /// Derived from CLDR supplemental currencyData fractions (_digits = "3").
+    /// </summary>
+    private static readonly HashSet<string> ThreeDecimalCurrencies = new(StringComparer.OrdinalIgnoreCase)
+    {
+        "BHD", "JOD", "KWD", "LYD", "OMR", "TND"
+    };
 
     private readonly SemaphoreSlim _tokenSemaphore = new(1, 1);
     private string _accessToken;
@@ -49,6 +68,37 @@ public class PayPalHttpClient
         return _settings.UseSandbox
             ? PayPalDefaults.SandboxApiBaseUrl
             : PayPalDefaults.LiveApiBaseUrl;
+    }
+
+    /// <summary>
+    /// Format amount according to ISO 4217 minor units (number of decimal places) for the given currency.
+    /// </summary>
+    /// <param name="amount">Amount to format</param>
+    /// <param name="currencyCode">ISO 4217 currency code</param>
+    /// <returns>String formatted with the correct number of decimal places</returns>
+    protected virtual string FormatPayPalAmount(decimal amount, string currencyCode)
+    {
+        // Default to 2 decimal places as per CLDR DEFAULT fraction digits.
+        var decimals = 2;
+
+        if (!string.IsNullOrEmpty(currencyCode))
+        {
+            if (ZeroDecimalCurrencies.Contains(currencyCode))
+                decimals = 0;
+            else if (ThreeDecimalCurrencies.Contains(currencyCode))
+                decimals = 3;
+        }
+
+        amount = Math.Round(amount, decimals);
+
+        var format = decimals switch
+        {
+            0 => "0",
+            3 => "0.000",
+            _ => "0.00"
+        };
+
+        return amount.ToString(format, CultureInfo.InvariantCulture);
     }
 
     protected virtual async Task<string> GetAccessTokenAsync()
@@ -156,7 +206,7 @@ public class PayPalHttpClient
                     amount = new
                     {
                         currency_code = order.CustomerCurrencyCode,
-                        value = order.OrderTotal.ToString("0.00", CultureInfo.InvariantCulture)
+                        value = FormatPayPalAmount(order.OrderTotal, order.CustomerCurrencyCode)
                     }
                 }
             },
