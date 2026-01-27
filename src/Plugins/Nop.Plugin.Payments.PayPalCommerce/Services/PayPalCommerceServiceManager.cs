@@ -5,6 +5,7 @@ using Microsoft.AspNetCore.WebUtilities;
 using Newtonsoft.Json;
 using PaypalServerSdk.Standard;
 using PaypalServerSdk.Standard.Authentication;
+using PaypalServerSdk.Standard.Utilities;
 using SdkModels = PaypalServerSdk.Standard.Models;
 using Nop.Core;
 using Nop.Core.Caching;
@@ -1815,8 +1816,7 @@ public class PayPalCommerceServiceManager
                     Path = "/intent",
                     Value = settings.PaymentType.ToString().ToUpper()
                 });
-                var updateRequest = new UpdateOrderRequest<object>(patches) { OrderId = order.Id };
-                await _httpClient.RequestAsync<UpdateOrderRequest<object>, EmptyResponse>(updateRequest, settings);
+                await PatchOrderWithServerSdkAsync(settings, order.Id, patches);
             }
 
             //save order details for future using as the payment request
@@ -1909,6 +1909,84 @@ public class PayPalCommerceServiceManager
             throw new NopException("Failed to map PayPal order response.");
 
         return order;
+    }
+    private async Task PatchOrderWithServerSdkAsync(PayPalCommerceSettings settings, string orderId, IEnumerable<Patch<object>> patches)
+    {
+        if (settings is null)
+            throw new ArgumentNullException(nameof(settings));
+
+        if (string.IsNullOrEmpty(orderId))
+            throw new ArgumentNullException(nameof(orderId));
+
+        if (patches is null)
+            throw new ArgumentNullException(nameof(patches));
+
+        var sdkPatches = MapPatchesToServerSdk(patches);
+        if (sdkPatches is null || sdkPatches.Count == 0)
+            return;
+
+        var client = CreatePaypalServerSdkClient(settings);
+
+        var input = new SdkModels.PatchOrderInput(
+            id: orderId,
+            contentType: "application/json",
+            paypalMockResponse: null,
+            paypalAuthAssertion: null,
+            body: sdkPatches);
+
+        await client.OrdersController.PatchOrderAsync(input);
+    }
+
+    private static List<SdkModels.Patch> MapPatchesToServerSdk(IEnumerable<Patch<object>> patches)
+    {
+        if (patches is null)
+            return null;
+
+        var sdkPatches = new List<SdkModels.Patch>();
+
+        foreach (var patch in patches)
+        {
+            if (patch is null)
+                continue;
+
+            var op = MapPatchOpToServerSdk(patch.Op);
+
+            JsonValue value = null;
+            if (patch.Value is not null)
+                value = JsonValue.FromObject(patch.Value);
+
+            sdkPatches.Add(new SdkModels.Patch(
+                op: op,
+                path: patch.Path,
+                mValue: value,
+                from: patch.From));
+        }
+
+        return sdkPatches;
+    }
+
+    private static SdkModels.PatchOp MapPatchOpToServerSdk(string op)
+    {
+        if (string.IsNullOrEmpty(op))
+            throw new ArgumentNullException(nameof(op));
+
+        switch (op.ToLowerInvariant())
+        {
+            case "add":
+                return SdkModels.PatchOp.Add;
+            case "remove":
+                return SdkModels.PatchOp.Remove;
+            case "replace":
+                return SdkModels.PatchOp.Replace;
+            case "move":
+                return SdkModels.PatchOp.Move;
+            case "copy":
+                return SdkModels.PatchOp.Copy;
+            case "test":
+                return SdkModels.PatchOp.Test;
+            default:
+                throw new NopException($"Unsupported patch operation '{op}'.");
+        }
     }
 
     private static SdkModels.CheckoutPaymentIntent MapCheckoutPaymentIntent(PaymentType paymentType)
@@ -2631,8 +2709,7 @@ public class PayPalCommerceServiceManager
                 Amount = orderAmount,
                 SupplementaryData = new() { Card = cardData }
             });
-            var updateRequest = new UpdateOrderRequest<object>(patches) { OrderId = order.Id };
-            await _httpClient.RequestAsync<UpdateOrderRequest<object>, EmptyResponse>(updateRequest, settings);
+            await PatchOrderWithServerSdkAsync(settings, order.Id, patches);
 
             return true;
         });
@@ -2759,8 +2836,7 @@ public class PayPalCommerceServiceManager
                 Amount = orderAmount,
                 SupplementaryData = new() { Card = cardData }
             });
-            var updateRequest = new UpdateOrderRequest<object>(patches) { OrderId = order.Id };
-            await _httpClient.RequestAsync<UpdateOrderRequest<object>, EmptyResponse>(updateRequest, settings);
+            await PatchOrderWithServerSdkAsync(settings, order.Id, patches);
 
             //place order immediately, if the appropriate setting is enabled
             if (placement == ButtonPlacement.PaymentMethod)
@@ -2939,8 +3015,7 @@ public class PayPalCommerceServiceManager
                     Path = "/purchase_units/@reference_id=='default'/invoice_id",
                     Value = nopOrder.CustomOrderNumber
                 };
-                var updateRequest = new UpdateOrderRequest<object>([patch]) { OrderId = order.Id };
-                await _httpClient.RequestAsync<UpdateOrderRequest<object>, EmptyResponse>(updateRequest, settings);
+                await PatchOrderWithServerSdkAsync(settings, order.Id, new List<Patch<object>> { patch });
 
                 order = settings.PaymentType switch
                 {
