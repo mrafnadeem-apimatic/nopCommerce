@@ -1,8 +1,13 @@
-﻿using System.Text;
-using Microsoft.Extensions.Logging;
+﻿using System;
+using System.Collections.Concurrent;
+using System.Text;
 using Microsoft.Net.Http.Headers;
 using Newtonsoft.Json;
 using Nop.Core;
+using Nop.Core.Domain.Logging;
+using Nop.Core.Domain.Security;
+using Nop.Core.Infrastructure;
+using Nop.Services.Logging;
 using Nop.Plugin.Payments.PayPalCommerce.Services.Api;
 using Nop.Plugin.Payments.PayPalCommerce.Services.Api.Authentication;
 using Nop.Plugin.Payments.PayPalCommerce.Services.Api.Models;
@@ -12,9 +17,10 @@ using Nop.Plugin.Payments.PayPalCommerce.Services.Api.Payments;
 using Nop.Plugin.Payments.PayPalCommerce.Services.Api.PaymentTokens;
 using PaypalServerSdk.Standard;
 using PaypalServerSdk.Standard.Authentication;
-using PaypalServerSdk.Standard.Controllers;
 using PaypalServerSdk.Standard.Exceptions;
 using PaypalServerSdk.Standard.Http.Response;
+using PaypalServerSdk.Standard.Http.Client.Proxy;
+using MsLogLevel = Microsoft.Extensions.Logging.LogLevel;
 using Environment = System.Environment;
 using PaypalModels = PaypalServerSdk.Standard.Models;
 
@@ -35,6 +41,11 @@ public class PayPalCommerceHttpClient
     };
 
     private static Dictionary<string, AccessToken> _accessTokens = new();
+
+    // Cache PayPal Server SDK clients so they can be reused instead of being
+    // recreated for every SDK call, which is expensive. Keyed by client id,
+    // secret and environment to allow different configurations to coexist.
+    private static readonly ConcurrentDictionary<string, PaypalServerSdkClient> _sdkClients = new();
 
     #endregion
 
@@ -95,18 +106,55 @@ public class PayPalCommerceHttpClient
             ? PaypalServerSdk.Standard.Environment.Sandbox
             : PaypalServerSdk.Standard.Environment.Production;
 
-        return new PaypalServerSdkClient.Builder()
-            .ClientCredentialsAuth(
-                new ClientCredentialsAuthModel.Builder(
-                    settings.ClientId,
-                    settings.SecretKey
-                ).Build())
-            .Environment(environment)
-            .LoggingConfig(config => config
-                .LogLevel(LogLevel.Information)
-                .RequestConfig(reqConfig => reqConfig.Body(true))
-                .ResponseConfig(respConfig => respConfig.Headers(true)))
-            .Build();
+        var cacheKey = $"{settings.ClientId}|{settings.SecretKey}|{environment}";
+
+        // determine whether detailed (body) logging should be enabled based on nopCommerce logger
+        var nopLogger = EngineContext.Current.Resolve<ILogger>();
+        var enableBodyLogging = nopLogger?.IsEnabled(LogLevel.Debug) ?? false;
+
+        return _sdkClients.GetOrAdd(cacheKey, _ =>
+        {
+            var builder = new PaypalServerSdkClient.Builder()
+                .ClientCredentialsAuth(
+                    new ClientCredentialsAuthModel.Builder(
+                        settings.ClientId,
+                        settings.SecretKey
+                    ).Build())
+                .Environment(environment)
+                .LoggingConfig(config =>
+                {
+                    config.LogLevel(MsLogLevel.Information);
+                    config.RequestConfig(reqConfig => reqConfig.Body(enableBodyLogging));
+                    config.ResponseConfig(respConfig => respConfig.Headers(true));
+                })
+                .HttpClientConfig(httpConfig =>
+                {
+                    // honor configured timeout
+                    var timeoutSeconds = settings.RequestTimeout ?? PayPalCommerceDefaults.RequestTimeout;
+                    httpConfig.Timeout(TimeSpan.FromSeconds(timeoutSeconds));
+
+                    // apply proxy configuration consistent with WithProxy() extension
+                    var proxySettings = EngineContext.Current.Resolve<ProxySettings>();
+                    if (proxySettings?.Enabled ?? false)
+                    {
+                        var proxyBuilder = new ProxyConfigurationBuilder(
+                            $"{proxySettings.Address}:{proxySettings.Port}");
+
+                        if (!string.IsNullOrEmpty(proxySettings.Username) &&
+                            !string.IsNullOrEmpty(proxySettings.Password))
+                        {
+                            proxyBuilder.Auth(proxySettings.Username, proxySettings.Password);
+                        }
+
+                        // enable tunneling so HTTPS requests are sent through the proxy
+                        proxyBuilder.Tunnel(true);
+
+                        httpConfig.Proxy(proxyBuilder);
+                    }
+                });
+
+            return builder.Build();
+        });
     }
 
     /// <summary>
@@ -236,7 +284,8 @@ public class PayPalCommerceHttpClient
                             var input = new PaypalModels.CreateOrderInput
                             {
                                 Body = sdkBody,
-                                Prefer = "return=representation"
+                                Prefer = "return=representation",
+                                PaypalRequestId = Guid.NewGuid().ToString()
                             };
 
                             return await client.OrdersController.CreateOrderAsync(input);
@@ -293,7 +342,8 @@ public class PayPalCommerceHttpClient
                             var input = new PaypalModels.AuthorizeOrderInput
                             {
                                 Id = createAuthorizationRequest.OrderId,
-                                Prefer = "return=representation"
+                                Prefer = "return=representation",
+                                PaypalRequestId = Guid.NewGuid().ToString()
                             };
 
                             return client.OrdersController.AuthorizeOrderAsync(input);
@@ -311,7 +361,8 @@ public class PayPalCommerceHttpClient
                             var input = new PaypalModels.CaptureOrderInput
                             {
                                 Id = createOrderCaptureRequest.OrderId,
-                                Prefer = "return=representation"
+                                Prefer = "return=representation",
+                                PaypalRequestId = Guid.NewGuid().ToString()
                             };
 
                             return client.OrdersController.CaptureOrderAsync(input);
@@ -354,7 +405,8 @@ public class PayPalCommerceHttpClient
                             {
                                 AuthorizationId = createPaymentCaptureRequest.AuthorizationId,
                                 Prefer = "return=representation",
-                                Body = sdkBody
+                                Body = sdkBody,
+                                PaypalRequestId = Guid.NewGuid().ToString()
                             };
 
                             return client.PaymentsController.CaptureAuthorizedPaymentAsync(input);
@@ -372,7 +424,8 @@ public class PayPalCommerceHttpClient
                             var input = new PaypalModels.VoidPaymentInput
                             {
                                 AuthorizationId = createVoidRequest.AuthorizationId,
-                                Prefer = "return=representation"
+                                Prefer = "return=representation",
+                                PaypalRequestId = Guid.NewGuid().ToString()
                             };
 
                             return client.PaymentsController.VoidPaymentAsync(input);
@@ -394,7 +447,8 @@ public class PayPalCommerceHttpClient
                             {
                                 CaptureId = createRefundRequest.CaptureId,
                                 Prefer = "return=representation",
-                                Body = sdkBody
+                                Body = sdkBody,
+                                PaypalRequestId = Guid.NewGuid().ToString()
                             };
 
                             return client.PaymentsController.RefundCapturedPaymentAsync(input);
@@ -414,7 +468,8 @@ public class PayPalCommerceHttpClient
 
                             var input = new PaypalModels.CreateSetupTokenInput
                             {
-                                Body = sdkBody
+                                Body = sdkBody,
+                                PaypalRequestId = Guid.NewGuid().ToString()
                             };
 
                             return client.VaultController.CreateSetupTokenAsync(input);
@@ -434,7 +489,8 @@ public class PayPalCommerceHttpClient
 
                             var input = new PaypalModels.CreatePaymentTokenInput
                             {
-                                Body = sdkBody
+                                Body = sdkBody,
+                                PaypalRequestId = Guid.NewGuid().ToString()
                             };
 
                             return client.VaultController.CreatePaymentTokenAsync(input);
