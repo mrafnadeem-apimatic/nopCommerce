@@ -1,11 +1,28 @@
-﻿using System.Text;
+﻿using System;
+using System.Collections.Concurrent;
+using System.Text;
 using Microsoft.Net.Http.Headers;
 using Newtonsoft.Json;
 using Nop.Core;
+using Nop.Core.Domain.Logging;
+using Nop.Core.Domain.Security;
+using Nop.Core.Infrastructure;
+using Nop.Services.Logging;
 using Nop.Plugin.Payments.PayPalCommerce.Services.Api;
 using Nop.Plugin.Payments.PayPalCommerce.Services.Api.Authentication;
 using Nop.Plugin.Payments.PayPalCommerce.Services.Api.Models;
 using Nop.Plugin.Payments.PayPalCommerce.Services.Api.Onboarding;
+using Nop.Plugin.Payments.PayPalCommerce.Services.Api.Orders;
+using Nop.Plugin.Payments.PayPalCommerce.Services.Api.Payments;
+using Nop.Plugin.Payments.PayPalCommerce.Services.Api.PaymentTokens;
+using PaypalServerSdk.Standard;
+using PaypalServerSdk.Standard.Authentication;
+using PaypalServerSdk.Standard.Exceptions;
+using PaypalServerSdk.Standard.Http.Response;
+using PaypalServerSdk.Standard.Http.Client.Proxy;
+using MsLogLevel = Microsoft.Extensions.Logging.LogLevel;
+using Environment = System.Environment;
+using PaypalModels = PaypalServerSdk.Standard.Models;
 
 namespace Nop.Plugin.Payments.PayPalCommerce.Services;
 
@@ -18,12 +35,26 @@ public class PayPalCommerceHttpClient
 
     private readonly HttpClient _httpClient;
 
+    private static readonly JsonSerializerSettings _serializerSettings = new()
+    {
+        NullValueHandling = NullValueHandling.Ignore
+    };
+
     private static Dictionary<string, AccessToken> _accessTokens = new();
+
+    // Cache PayPal Server SDK clients so they can be reused instead of being
+    // recreated for every SDK call, which is expensive. Keyed by client id,
+    // secret and environment to allow different configurations to coexist.
+    private static readonly ConcurrentDictionary<string, PaypalServerSdkClient> _sdkClients = new();
 
     #endregion
 
     #region Ctor
 
+    /// <summary>
+    /// Initializes a new instance of the <see cref="PayPalCommerceHttpClient"/> class.
+    /// </summary>
+    /// <param name="httpClient">The HTTP client used to send requests to PayPal endpoints.</param>
     public PayPalCommerceHttpClient(HttpClient httpClient)
     {
         _httpClient = httpClient;
@@ -64,6 +95,162 @@ public class PayPalCommerceHttpClient
         return accessToken.Token;
     }
 
+    /// <summary>
+    /// Create configured PayPal Server SDK client
+    /// </summary>
+    /// <param name="settings">Plugin settings</param>
+    /// <returns>SDK client instance</returns>
+    private static PaypalServerSdkClient CreateSdkClient(PayPalCommerceSettings settings)
+    {
+        var environment = settings.UseSandbox
+            ? PaypalServerSdk.Standard.Environment.Sandbox
+            : PaypalServerSdk.Standard.Environment.Production;
+
+        var cacheKey = $"{settings.ClientId}|{settings.SecretKey}|{environment}";
+
+        // determine whether detailed (body) logging should be enabled based on nopCommerce logger
+        var nopLogger = EngineContext.Current.Resolve<ILogger>();
+        var enableBodyLogging = nopLogger?.IsEnabled(LogLevel.Debug) ?? false;
+
+        return _sdkClients.GetOrAdd(cacheKey, _ =>
+        {
+            var builder = new PaypalServerSdkClient.Builder()
+                .ClientCredentialsAuth(
+                    new ClientCredentialsAuthModel.Builder(
+                        settings.ClientId,
+                        settings.SecretKey
+                    ).Build())
+                .Environment(environment)
+                .LoggingConfig(config =>
+                {
+                    config.LogLevel(MsLogLevel.Information);
+                    config.RequestConfig(reqConfig => reqConfig.Body(enableBodyLogging));
+                    config.ResponseConfig(respConfig => respConfig.Headers(true));
+                })
+                .HttpClientConfig(httpConfig =>
+                {
+                    // honor configured timeout
+                    var timeoutSeconds = settings.RequestTimeout ?? PayPalCommerceDefaults.RequestTimeout;
+                    httpConfig.Timeout(TimeSpan.FromSeconds(timeoutSeconds));
+
+                    // apply proxy configuration consistent with WithProxy() extension
+                    var proxySettings = EngineContext.Current.Resolve<ProxySettings>();
+                    if (proxySettings?.Enabled ?? false)
+                    {
+                        var proxyBuilder = new ProxyConfigurationBuilder(
+                            $"{proxySettings.Address}:{proxySettings.Port}");
+
+                        if (!string.IsNullOrEmpty(proxySettings.Username) &&
+                            !string.IsNullOrEmpty(proxySettings.Password))
+                        {
+                            proxyBuilder.Auth(proxySettings.Username, proxySettings.Password);
+                        }
+
+                        // enable tunneling so HTTPS requests are sent through the proxy
+                        proxyBuilder.Tunnel(true);
+
+                        httpConfig.Proxy(proxyBuilder);
+                    }
+                });
+
+            return builder.Build();
+        });
+    }
+
+    /// <summary>
+    /// Executes a PayPal Server SDK call and maps the response to the corresponding plugin response type.
+    /// </summary>
+    /// <typeparam name="TPluginResponse">Type of the response model used by the plugin.</typeparam>
+    /// <typeparam name="TSdkResponse">Type of the underlying PayPal SDK response.</typeparam>
+    /// <param name="settings">Plugin settings used to configure the SDK client.</param>
+    /// <param name="call">Delegate that performs the SDK call and returns a typed API response.</param>
+    /// <returns>
+    /// A task that represents the asynchronous operation.
+    /// The task result contains the mapped plugin response.
+    /// </returns>
+    private static async Task<TPluginResponse> ExecuteSdkCallAsync<TPluginResponse, TSdkResponse>(
+        PayPalCommerceSettings settings,
+        Func<PaypalServerSdkClient, Task<ApiResponse<TSdkResponse>>> call)
+        where TPluginResponse : class, IApiResponse
+    {
+        var client = CreateSdkClient(settings);
+
+        try
+        {
+            var apiResponse = await call(client);
+
+            //some endpoints don't return a body from the original implementation
+            if (typeof(TPluginResponse) == typeof(EmptyResponse))
+                return default;
+
+            if (apiResponse is null)
+                throw new NopException("Failed request", new NopException("Empty response from PayPal API"));
+
+            if (apiResponse.Data is null)
+            {
+                var message = $"Empty response body from PayPal API for '{typeof(TPluginResponse).Name}'.";
+                throw new NopException("Failed request", new NopException(message));
+            }
+
+            var responseJson = JsonConvert.SerializeObject(apiResponse.Data, _serializerSettings);
+            return JsonConvert.DeserializeObject<TPluginResponse>(responseJson);
+        }
+        catch (ApiException ex)
+        {
+            var message = BuildApiExceptionMessage(ex);
+            throw new NopException("Failed request", new NopException(message));
+        }
+    }
+
+    /// <summary>
+    /// Executes a PayPal Server SDK call that does not return a response body.
+    /// </summary>
+    /// <param name="settings">Plugin settings used to configure the SDK client.</param>
+    /// <param name="call">Delegate that performs the SDK call.</param>
+    /// <returns>A task that represents the asynchronous operation.</returns>
+    private static async Task ExecuteSdkCallAsync(
+        PayPalCommerceSettings settings,
+        Func<PaypalServerSdkClient, Task> call)
+    {
+        var client = CreateSdkClient(settings);
+
+        try
+        {
+            await call(client);
+        }
+        catch (ApiException ex)
+        {
+            var message = BuildApiExceptionMessage(ex);
+            throw new NopException("Failed request", new NopException(message));
+        }
+    }
+
+    /// <summary>
+    /// Builds a detailed error message from the specified PayPal API exception.
+    /// </summary>
+    /// <param name="ex">The API exception thrown by the PayPal Server SDK.</param>
+    /// <returns>A string that contains the base error message and any additional error details, if available.</returns>
+    private static string BuildApiExceptionMessage(ApiException ex)
+    {
+        var message = ex.Message;
+
+        if (ex is ErrorException errorException)
+        {
+            var errorDetails = new
+            {
+                errorException.Name,
+                errorException.Message,
+                errorException.DebugId,
+                errorException.Details,
+                errorException.Links
+            };
+
+            message += $"{Environment.NewLine}{JsonConvert.SerializeObject(errorDetails, Formatting.Indented)}";
+        }
+
+        return message;
+    }
+
     #endregion
 
     #region Methods
@@ -82,8 +269,250 @@ public class PayPalCommerceHttpClient
     public async Task<TResponse> RequestAsync<TRequest, TResponse>(TRequest request, PayPalCommerceSettings settings)
         where TRequest : IApiRequest where TResponse : IApiResponse
     {
+        //route selected operations through PayPal Server SDK
+        switch (request)
+        {
+            case CreateOrderRequest createOrderRequest when typeof(TResponse) == typeof(CreateOrderResponse):
+                {
+                    var result = await ExecuteSdkCallAsync<CreateOrderResponse, PaypalModels.Order>(
+                        settings,
+                        async client =>
+                        {
+                            var bodyJson = JsonConvert.SerializeObject(createOrderRequest, _serializerSettings);
+                            var sdkBody = JsonConvert.DeserializeObject<PaypalModels.OrderRequest>(bodyJson);
+
+                            var input = new PaypalModels.CreateOrderInput
+                            {
+                                Body = sdkBody,
+                                Prefer = "return=representation",
+                                PaypalRequestId = Guid.NewGuid().ToString()
+                            };
+
+                            return await client.OrdersController.CreateOrderAsync(input);
+                        });
+
+                    return (TResponse)(object)result;
+                }
+
+            case GetOrderRequest getOrderRequest when typeof(TResponse) == typeof(GetOrderResponse):
+                {
+                    var result = await ExecuteSdkCallAsync<GetOrderResponse, PaypalModels.Order>(
+                        settings,
+                        client =>
+                        {
+                            var input = new PaypalModels.GetOrderInput
+                            {
+                                Id = getOrderRequest.OrderId,
+                                Fields = getOrderRequest.Fields
+                            };
+
+                            return client.OrdersController.GetOrderAsync(input);
+                        });
+
+                    return (TResponse)(object)result;
+                }
+
+            case UpdateOrderRequest<object> updateOrderRequest when typeof(TResponse) == typeof(EmptyResponse):
+                {
+                    await ExecuteSdkCallAsync(
+                        settings,
+                        client =>
+                        {
+                            var bodyJson = JsonConvert.SerializeObject(updateOrderRequest, _serializerSettings);
+                            var sdkPatches = JsonConvert.DeserializeObject<List<PaypalModels.Patch>>(bodyJson) ?? new();
+
+                            var input = new PaypalModels.PatchOrderInput
+                            {
+                                Id = updateOrderRequest.OrderId,
+                                Body = sdkPatches
+                            };
+
+                            return client.OrdersController.PatchOrderAsync(input);
+                        });
+
+                    return default;
+                }
+
+            case CreateAuthorizationRequest createAuthorizationRequest when typeof(TResponse) == typeof(CreateAuthorizationResponse):
+                {
+                    var result = await ExecuteSdkCallAsync<CreateAuthorizationResponse, PaypalModels.OrderAuthorizeResponse>(
+                        settings,
+                        client =>
+                        {
+                            var input = new PaypalModels.AuthorizeOrderInput
+                            {
+                                Id = createAuthorizationRequest.OrderId,
+                                Prefer = "return=representation",
+                                PaypalRequestId = Guid.NewGuid().ToString()
+                            };
+
+                            return client.OrdersController.AuthorizeOrderAsync(input);
+                        });
+
+                    return (TResponse)(object)result;
+                }
+
+            case Services.Api.Orders.CreateCaptureRequest createOrderCaptureRequest when typeof(TResponse) == typeof(Services.Api.Orders.CreateCaptureResponse):
+                {
+                    var result = await ExecuteSdkCallAsync<Services.Api.Orders.CreateCaptureResponse, PaypalModels.Order>(
+                        settings,
+                        client =>
+                        {
+                            var input = new PaypalModels.CaptureOrderInput
+                            {
+                                Id = createOrderCaptureRequest.OrderId,
+                                Prefer = "return=representation",
+                                PaypalRequestId = Guid.NewGuid().ToString()
+                            };
+
+                            return client.OrdersController.CaptureOrderAsync(input);
+                        });
+
+                    return (TResponse)(object)result;
+                }
+
+            case CreateTrackingRequest createTrackingRequest when typeof(TResponse) == typeof(CreateTrackingResponse):
+                {
+                    var result = await ExecuteSdkCallAsync<CreateTrackingResponse, PaypalModels.Order>(
+                        settings,
+                        client =>
+                        {
+                            var bodyJson = JsonConvert.SerializeObject(createTrackingRequest, _serializerSettings);
+                            var sdkBody = JsonConvert.DeserializeObject<PaypalModels.OrderTrackerRequest>(bodyJson);
+
+                            var input = new PaypalModels.CreateOrderTrackingInput
+                            {
+                                Id = createTrackingRequest.OrderId,
+                                Body = sdkBody
+                            };
+
+                            return client.OrdersController.CreateOrderTrackingAsync(input);
+                        });
+
+                    return (TResponse)(object)result;
+                }
+
+            case Services.Api.Payments.CreateCaptureRequest createPaymentCaptureRequest when typeof(TResponse) == typeof(Services.Api.Payments.CreateCaptureResponse):
+                {
+                    var result = await ExecuteSdkCallAsync<Services.Api.Payments.CreateCaptureResponse, PaypalModels.CapturedPayment>(
+                        settings,
+                        client =>
+                        {
+                            var bodyJson = JsonConvert.SerializeObject(createPaymentCaptureRequest, _serializerSettings);
+                            var sdkBody = JsonConvert.DeserializeObject<PaypalModels.CaptureRequest>(bodyJson);
+
+                            var input = new PaypalModels.CaptureAuthorizedPaymentInput
+                            {
+                                AuthorizationId = createPaymentCaptureRequest.AuthorizationId,
+                                Prefer = "return=representation",
+                                Body = sdkBody,
+                                PaypalRequestId = Guid.NewGuid().ToString()
+                            };
+
+                            return client.PaymentsController.CaptureAuthorizedPaymentAsync(input);
+                        });
+
+                    return (TResponse)(object)result;
+                }
+
+            case CreateVoidRequest createVoidRequest when typeof(TResponse) == typeof(EmptyResponse):
+                {
+                    await ExecuteSdkCallAsync(
+                        settings,
+                        client =>
+                        {
+                            var input = new PaypalModels.VoidPaymentInput
+                            {
+                                AuthorizationId = createVoidRequest.AuthorizationId,
+                                Prefer = "return=representation",
+                                PaypalRequestId = Guid.NewGuid().ToString()
+                            };
+
+                            return client.PaymentsController.VoidPaymentAsync(input);
+                        });
+
+                    return default;
+                }
+
+            case CreateRefundRequest createRefundRequest when typeof(TResponse) == typeof(CreateRefundResponse):
+                {
+                    var result = await ExecuteSdkCallAsync<CreateRefundResponse, PaypalModels.Refund>(
+                        settings,
+                        client =>
+                        {
+                            var bodyJson = JsonConvert.SerializeObject(createRefundRequest, _serializerSettings);
+                            var sdkBody = JsonConvert.DeserializeObject<PaypalModels.RefundRequest>(bodyJson);
+
+                            var input = new PaypalModels.RefundCapturedPaymentInput
+                            {
+                                CaptureId = createRefundRequest.CaptureId,
+                                Prefer = "return=representation",
+                                Body = sdkBody,
+                                PaypalRequestId = Guid.NewGuid().ToString()
+                            };
+
+                            return client.PaymentsController.RefundCapturedPaymentAsync(input);
+                        });
+
+                    return (TResponse)(object)result;
+                }
+
+            case CreateSetupTokenRequest createSetupTokenRequest when typeof(TResponse) == typeof(CreateSetupTokenResponse):
+                {
+                    var result = await ExecuteSdkCallAsync<CreateSetupTokenResponse, PaypalModels.SetupTokenResponse>(
+                        settings,
+                        client =>
+                        {
+                            var bodyJson = JsonConvert.SerializeObject(createSetupTokenRequest, _serializerSettings);
+                            var sdkBody = JsonConvert.DeserializeObject<PaypalModels.SetupTokenRequest>(bodyJson);
+
+                            var input = new PaypalModels.CreateSetupTokenInput
+                            {
+                                Body = sdkBody,
+                                PaypalRequestId = Guid.NewGuid().ToString()
+                            };
+
+                            return client.VaultController.CreateSetupTokenAsync(input);
+                        });
+
+                    return (TResponse)(object)result;
+                }
+
+            case CreatePaymentTokenRequest createPaymentTokenRequest when typeof(TResponse) == typeof(CreatePaymentTokenResponse):
+                {
+                    var result = await ExecuteSdkCallAsync<CreatePaymentTokenResponse, PaypalModels.PaymentTokenResponse>(
+                        settings,
+                        client =>
+                        {
+                            var bodyJson = JsonConvert.SerializeObject(createPaymentTokenRequest, _serializerSettings);
+                            var sdkBody = JsonConvert.DeserializeObject<PaypalModels.PaymentTokenRequest>(bodyJson);
+
+                            var input = new PaypalModels.CreatePaymentTokenInput
+                            {
+                                Body = sdkBody,
+                                PaypalRequestId = Guid.NewGuid().ToString()
+                            };
+
+                            return client.VaultController.CreatePaymentTokenAsync(input);
+                        });
+
+                    return (TResponse)(object)result;
+                }
+
+            case DeletePaymentTokenRequest deletePaymentTokenRequest when typeof(TResponse) == typeof(EmptyResponse):
+                {
+                    await ExecuteSdkCallAsync(
+                        settings,
+                        client => client.VaultController.DeletePaymentTokenAsync(deletePaymentTokenRequest.Id));
+
+                    return default;
+                }
+        }
+
+        //fallback to legacy HttpClient implementation for unsupported operations
+
         //prepare request body, content is always JSON except for access token requests
-        var requestString = JsonConvert.SerializeObject(request, new JsonSerializerSettings { NullValueHandling = NullValueHandling.Ignore });
+        var requestString = JsonConvert.SerializeObject(request, _serializerSettings);
         var requestContent = request is GetAccessTokenRequest accessTokenRequest
             ? new FormUrlEncodedContent(PayPalCommerceServiceManager.ObjectToDictionary(accessTokenRequest))
             : (ByteArrayContent)new StringContent(requestString, Encoding.Default, MimeTypes.ApplicationJson);

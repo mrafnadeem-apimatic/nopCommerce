@@ -8,6 +8,7 @@ using Microsoft.AspNetCore.Mvc;
 using Microsoft.AspNetCore.Mvc.ApplicationParts;
 using Microsoft.AspNetCore.Mvc.Infrastructure;
 using Microsoft.AspNetCore.Mvc.Razor;
+using Microsoft.AspNetCore.Mvc.Controllers;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
 using Newtonsoft.Json.Serialization;
@@ -302,6 +303,17 @@ public static class ServiceCollectionExtensions
     {
         //add basic MVC feature
         var mvcBuilder = services.AddControllersWithViews();
+
+        //replace default controller feature provider with nopCommerce-specific one
+        //so external SDK "Controller" types (e.g. PaypalServerSdk.Standard.Controllers.*)
+        //are not treated as MVC controllers and therefore are not registered in DI
+        var defaultControllerProvider = mvcBuilder.PartManager.FeatureProviders
+            .OfType<ControllerFeatureProvider>()
+            .FirstOrDefault();
+        if (defaultControllerProvider is not null)
+            mvcBuilder.PartManager.FeatureProviders.Remove(defaultControllerProvider);
+
+        mvcBuilder.PartManager.FeatureProviders.Add(new NopControllerFeatureProvider());
 
         mvcBuilder.AddRazorRuntimeCompilation();
 
