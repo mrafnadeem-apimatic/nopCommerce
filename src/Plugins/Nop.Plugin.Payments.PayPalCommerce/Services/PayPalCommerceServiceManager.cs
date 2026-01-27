@@ -1886,6 +1886,31 @@ public class PayPalCommerceServiceManager
         return order;
     }
 
+    private async Task<Order> CaptureOrderWithServerSdkAsync(PayPalCommerceSettings settings, string orderId)
+    {
+        if (string.IsNullOrEmpty(orderId))
+            throw new ArgumentNullException(nameof(orderId));
+
+        var client = CreatePaypalServerSdkClient(settings);
+
+        var input = new SdkModels.CaptureOrderInput(
+            id: orderId,
+            contentType: "application/json",
+            paypalRequestId: Guid.NewGuid().ToString(),
+            prefer: "return=representation");
+
+        var response = await client.OrdersController.CaptureOrderAsync(input);
+        if (response?.Data is null)
+            throw new NopException("Failed to read PayPal order data.");
+
+        var sdkOrder = response.Data;
+        var order = MapOrderFromServerSdk(sdkOrder);
+        if (order is null)
+            throw new NopException("Failed to map PayPal order response.");
+
+        return order;
+    }
+
     private static SdkModels.CheckoutPaymentIntent MapCheckoutPaymentIntent(PaymentType paymentType)
     {
         return paymentType switch
@@ -2921,8 +2946,7 @@ public class PayPalCommerceServiceManager
                 {
                     Domain.PaymentType.Authorize => await _httpClient.RequestAsync<CreateAuthorizationRequest, CreateAuthorizationResponse>
                         (new CreateAuthorizationRequest { OrderId = order.Id }, settings),
-                    Domain.PaymentType.Capture => await _httpClient.RequestAsync<Api.Orders.CreateCaptureRequest, Api.Orders.CreateCaptureResponse>
-                        (new Api.Orders.CreateCaptureRequest { OrderId = order.Id }, settings),
+                    Domain.PaymentType.Capture => await CaptureOrderWithServerSdkAsync(settings, order.Id),
                     _ => null
                 };
             }
@@ -3205,17 +3229,33 @@ public class PayPalCommerceServiceManager
             if (string.IsNullOrEmpty(authorizationId))
                 throw new NopException("Authorization ID not set");
 
-            var request = new Api.Payments.CreateCaptureRequest { AuthorizationId = authorizationId };
-            var capture = await _httpClient.RequestAsync<Api.Payments.CreateCaptureRequest, Api.Payments.CreateCaptureResponse>(request, settings);
+            var client = CreatePaypalServerSdkClient(settings);
 
-            if (capture.Status?.ToUpper() == CaptureStatusType.DECLINED.ToString())
+            var input = new SdkModels.CaptureAuthorizedPaymentInput(
+                authorizationId: authorizationId,
+                contentType: "application/json",
+                paypalRequestId: Guid.NewGuid().ToString(),
+                prefer: "return=representation");
+
+            var response = await client.PaymentsController.CaptureAuthorizedPaymentAsync(input);
+            var sdkCapture = response?.Data;
+            if (sdkCapture is null)
+                throw new NopException("Failed to read PayPal capture data.");
+
+            var status = sdkCapture.Status?.ToString()?.ToUpperInvariant();
+
+            if (status == CaptureStatusType.DECLINED.ToString())
                 throw new NopException("The funds could not be captured");
 
-            if (capture.Status?.ToUpper() == CaptureStatusType.FAILED.ToString())
+            if (status == CaptureStatusType.FAILED.ToString())
                 throw new NopException("There was an error while capturing payment");
 
-            if (capture.Status?.ToUpper() == CaptureStatusType.PENDING.ToString())
-                throw new NopException($"Capture is in {capture.Status} status due to {capture.StatusDetails?.Reason}");
+            if (status == CaptureStatusType.PENDING.ToString())
+                throw new NopException($"Capture is in {sdkCapture.Status} status due to {sdkCapture.StatusDetails?.Reason}");
+
+            // Map SDK captured payment back to existing Capture model via JSON round-trip
+            var serializedCapture = JsonConvert.SerializeObject(sdkCapture);
+            var capture = JsonConvert.DeserializeObject<Capture>(serializedCapture);
 
             return capture;
         });
