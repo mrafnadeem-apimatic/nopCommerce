@@ -1541,7 +1541,7 @@ public class PayPalCommerceServiceManager
                 throw new NopException("Failed to get PayPal order info");
             }
 
-            var order = await _httpClient.RequestAsync<GetOrderRequest, GetOrderResponse>(new GetOrderRequest { OrderId = orderId }, settings);
+            var order = await GetOrderWithServerSdkAsync(settings, orderId);
 
             return order;
         });
@@ -1579,8 +1579,7 @@ public class PayPalCommerceServiceManager
                 return null;
             }
 
-            var order = await _httpClient
-                .RequestAsync<GetOrderRequest, GetOrderResponse>(new GetOrderRequest { OrderId = orderIdValue.Value }, settings);
+            var order = await GetOrderWithServerSdkAsync(settings, orderIdValue.Value);
 
             //we cannot use completed order
             if (order.Status?.ToUpper() != OrderStatusType.CREATED.ToString() &&
@@ -1855,6 +1854,27 @@ public class PayPalCommerceServiceManager
             prefer: "return=representation");
 
         var response = await client.OrdersController.CreateOrderAsync(input);
+        if (response?.Data is null)
+            throw new NopException("Failed to read PayPal order data.");
+
+        var sdkOrder = response.Data;
+        var order = MapOrderFromServerSdk(sdkOrder);
+        if (order is null)
+            throw new NopException("Failed to map PayPal order response.");
+
+        return order;
+    }
+
+    private async Task<Order> GetOrderWithServerSdkAsync(PayPalCommerceSettings settings, string orderId)
+    {
+        if (string.IsNullOrEmpty(orderId))
+            throw new ArgumentException("Order ID is required.", nameof(orderId));
+
+        var client = CreatePaypalServerSdkClient(settings);
+
+        var input = new SdkModels.GetOrderInput(id: orderId);
+
+        var response = await client.OrdersController.GetOrderAsync(input);
         if (response?.Data is null)
             throw new NopException("Failed to read PayPal order data.");
 
@@ -2449,22 +2469,8 @@ public class PayPalCommerceServiceManager
         if (sdkOrder is null)
             return null;
 
-        return new Order
-        {
-            CreateTime = sdkOrder.CreateTime,
-            UpdateTime = sdkOrder.UpdateTime,
-            Id = sdkOrder.Id,
-            Status = sdkOrder.Status?.ToString(),
-            Intent = sdkOrder.Intent?.ToString(),
-            Links = sdkOrder.Links?
-                .Select(link => new Link
-                {
-                    Href = link.Href,
-                    Rel = link.Rel,
-                    Method = link.Method?.ToString()
-                })
-                .ToList()
-        };
+        var serializedOrder = JsonConvert.SerializeObject(sdkOrder);
+        return JsonConvert.DeserializeObject<Order>(serializedOrder);
     }
 
     private static PaypalServerSdkClient CreatePaypalServerSdkClient(PayPalCommerceSettings settings)
@@ -2545,8 +2551,7 @@ public class PayPalCommerceServiceManager
                 return false;
 
             //check the order status
-            var order = await _httpClient
-                .RequestAsync<GetOrderRequest, GetOrderResponse>(new GetOrderRequest { OrderId = orderIdValue.Value }, settings);
+            var order = await GetOrderWithServerSdkAsync(settings, orderIdValue.Value);
             if (order.Status?.ToUpper() != OrderStatusType.CREATED.ToString() &&
                 order.Status?.ToUpper() != OrderStatusType.PAYER_ACTION_REQUIRED.ToString() &&
                 order.Status?.ToUpper() != OrderStatusType.APPROVED.ToString())
@@ -2661,8 +2666,7 @@ public class PayPalCommerceServiceManager
             }
 
             //check the order status
-            var order = await _httpClient
-                .RequestAsync<GetOrderRequest, GetOrderResponse>(new GetOrderRequest { OrderId = orderIdValue.Value }, settings);
+            var order = await GetOrderWithServerSdkAsync(settings, orderIdValue.Value);
             if (order.Status?.ToUpper() != OrderStatusType.APPROVED.ToString() && order.Status?.ToUpper() != OrderStatusType.COMPLETED.ToString())
             {
                 if (order.Status?.ToUpper() == OrderStatusType.CREATED.ToString())
@@ -2823,8 +2827,7 @@ public class PayPalCommerceServiceManager
             }
 
             //check the order status
-            var order = await _httpClient
-                .RequestAsync<GetOrderRequest, GetOrderResponse>(new GetOrderRequest { OrderId = orderId }, settings) as Order;
+            var order = await GetOrderWithServerSdkAsync(settings, orderId);
             if (order.Status?.ToUpper() != OrderStatusType.APPROVED.ToString() && order.Status?.ToUpper() != OrderStatusType.COMPLETED.ToString())
             {
                 if (order.Status?.ToUpper() == OrderStatusType.CREATED.ToString())
@@ -3627,8 +3630,7 @@ public class PayPalCommerceServiceManager
             if (!customValues.TryGetValue(orderIdKey, out var orderIdValue))
                 throw new NopException("Failed to get PayPal order info");
 
-            var order = await _httpClient
-                .RequestAsync<GetOrderRequest, GetOrderResponse>(new GetOrderRequest { OrderId = orderIdValue.Value }, settings) as Order;
+            var order = await GetOrderWithServerSdkAsync(settings, orderIdValue.Value);
             if (order.Status?.ToUpper() != OrderStatusType.COMPLETED.ToString())
                 throw new NopException($"Unable to assign tracking information to orders in {order.Status} status");
 
@@ -3847,8 +3849,7 @@ public class PayPalCommerceServiceManager
                     {
                         try
                         {
-                            var orderRequest = new GetOrderRequest { OrderId = paymentToken.Metadata.OrderId };
-                            var paymentTokenOrder = await _httpClient.RequestAsync<GetOrderRequest, GetOrderResponse>(orderRequest, settings);
+                            var paymentTokenOrder = await GetOrderWithServerSdkAsync(settings, paymentToken.Metadata.OrderId);
                             if (Guid.TryParse(paymentTokenOrder.CustomId, out var guid))
                                 customerId = (await _orderService.GetOrderByGuidAsync(guid))?.CustomerId;
                         }
