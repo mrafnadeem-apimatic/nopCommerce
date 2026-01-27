@@ -1,4 +1,4 @@
-using System.Globalization;
+﻿using System.Globalization;
 using System.Security.Cryptography;
 using System.Text;
 using Microsoft.AspNetCore.WebUtilities;
@@ -52,6 +52,7 @@ using NopShippingOption = Nop.Core.Domain.Shipping.ShippingOption;
 using Order = Nop.Plugin.Payments.PayPalCommerce.Services.Api.Models.Order;
 using PaymentType = Nop.Plugin.Payments.PayPalCommerce.Domain.PaymentType;
 using ShippingOption = Nop.Plugin.Payments.PayPalCommerce.Services.Api.Models.ShippingOption;
+using Microsoft.Extensions.Logging;
 
 namespace Nop.Plugin.Payments.PayPalCommerce.Services;
 
@@ -71,7 +72,7 @@ public class PayPalCommerceServiceManager
     private readonly ICustomerService _customerService;
     private readonly IGenericAttributeService _genericAttributeService;
     private readonly ILocalizationService _localizationService;
-    private readonly ILogger _logger;
+    private readonly Nop.Services.Logging.ILogger _logger;
     private readonly INopUrlHelper _nopUrlHelper;
     private readonly IOrderProcessingService _orderProcessingService;
     private readonly IOrderService _orderService;
@@ -111,7 +112,7 @@ public class PayPalCommerceServiceManager
         ICustomerService customerService,
         IGenericAttributeService genericAttributeService,
         ILocalizationService localizationService,
-        ILogger logger,
+        Nop.Services.Logging.ILogger logger,
         INopUrlHelper nopUrlHelper,
         IOrderProcessingService orderProcessingService,
         IOrderService orderService,
@@ -2589,7 +2590,9 @@ public class PayPalCommerceServiceManager
 
         var builder = new PaypalServerSdkClient.Builder()
             .ClientCredentialsAuth(credentials)
-            .Environment(environment);
+            .Environment(environment)
+            .LoggingConfig(config => config
+                .LogLevel(LogLevel.Information));
 
         if (settings.RequestTimeout.HasValue && settings.RequestTimeout.Value > 0)
         {
