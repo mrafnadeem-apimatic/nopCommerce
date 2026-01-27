@@ -33,8 +33,7 @@ public partial class Program
                 //we don't validate the scopes, since at the app start and the initial configuration we need 
                 //to resolve some services (registered as "scoped") through the root container
                 options.ValidateScopes = false;
-                //disable validation on build to avoid failing on external SDK types we never resolve
-                options.ValidateOnBuild = false;
+                options.ValidateOnBuild = true;
             });
 
         //add services to the application and configure service provider
