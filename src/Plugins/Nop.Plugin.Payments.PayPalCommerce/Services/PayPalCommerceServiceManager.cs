@@ -2183,6 +2183,31 @@ public class PayPalCommerceServiceManager
             unitOfMeasure: item.UnitOfMeasure);
     }
 
+    private static SdkModels.OrderTrackerItem MapOrderTrackerItemToServerSdk(Item item)
+    {
+        if (item is null)
+            return null;
+
+        SdkModels.UniversalProductCode upc = null;
+        if (item.Upc is not null)
+        {
+            if (!Enum.TryParse<SdkModels.UpcType>(item.Upc.Type, out var upcType))
+                throw new NopException("Invalid UniversalProductCode Type!");
+
+            upc = new SdkModels.UniversalProductCode(
+                type: upcType,
+                code: item.Upc.Code);
+        }
+
+        return new SdkModels.OrderTrackerItem(
+            name: item.Name,
+            quantity: item.Quantity,
+            sku: item.Sku,
+            url: item.Url,
+            imageUrl: item.ImageUrl,
+            upc: upc);
+    }
+
     private static SdkModels.ShippingDetails MapShippingToServerSdk(Shipping shipping)
     {
         if (shipping is null)
@@ -2227,6 +2252,26 @@ public class PayPalCommerceServiceManager
             selected: option.Selected ?? false,
             type: type,
             amount: MapMoneyToServerSdk(option.Amount));
+    }
+
+    private static SdkModels.ShipmentCarrier MapShipmentCarrierToServerSdk(string carrier)
+    {
+        if (string.IsNullOrEmpty(carrier))
+            throw new ArgumentException("Carrier is required.", nameof(carrier));
+
+        try
+        {
+            var parsed = JsonConvert.DeserializeObject<SdkModels.ShipmentCarrier>($"\"{carrier}\"");
+
+            if (parsed == SdkModels.ShipmentCarrier._Unknown)
+                throw new NopException($"Unknown shipment carrier '{carrier}'");
+
+            return parsed;
+        }
+        catch
+        {
+            throw new NopException($"Unknown shipment carrier '{carrier}'");
+        }
     }
 
     private static SdkModels.Address MapAddressToServerSdk(Address address)
@@ -3945,16 +3990,32 @@ public class PayPalCommerceServiceManager
                 };
             }).ToListAsync();
 
-            var request = new CreateTrackingRequest
-            {
-                OrderId = order.Id,
-                CaptureId = capture.Id,
-                TrackingNumber = shipment.TrackingNumber,
-                NotifyPayer = true,
-                Carrier = carrier,
-                Items = items
-            };
-            order = await _httpClient.RequestAsync<CreateTrackingRequest, CreateTrackingResponse>(request, settings);
+            var sdkCarrier = MapShipmentCarrierToServerSdk(carrier);
+            var sdkItems = items?
+                .Select(MapOrderTrackerItemToServerSdk)
+                .Where(item => item is not null)
+                .ToList();
+
+            var trackerRequest = new SdkModels.OrderTrackerRequest(
+                captureId: capture.Id,
+                trackingNumber: shipment.TrackingNumber,
+                carrier: sdkCarrier,
+                notifyPayer: true,
+                items: sdkItems);
+
+            var input = new SdkModels.CreateOrderTrackingInput(
+                id: order.Id,
+                contentType: "application/json",
+                body: trackerRequest);
+
+            var response = await _paypalServerSdkClient.OrdersController.CreateOrderTrackingAsync(input);
+            if (response?.Data is null)
+                throw new NopException("Failed to read PayPal order data.");
+
+            var sdkOrder = response.Data;
+            var updatedOrder = MapOrderFromServerSdk(sdkOrder);
+            if (updatedOrder is null)
+                throw new NopException("Failed to map PayPal order response.");
 
             return true;
         });
