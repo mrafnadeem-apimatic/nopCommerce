@@ -3565,12 +3565,52 @@ public class PayPalCommerceServiceManager
                 };
             }
 
-            var order = await _httpClient.RequestAsync<CreateOrderRequest, CreateOrderResponse>(new CreateOrderRequest
+            var intent = MapCheckoutPaymentIntent(settings.PaymentType);
+
+            var purchaseUnits = new List<SdkModels.PurchaseUnitRequest>();
+
+            if (purchaseUnit is not null)
             {
-                Intent = settings.PaymentType.ToString().ToUpper(),
-                PaymentSource = paymentSourceDetails,
-                PurchaseUnits = [purchaseUnit]
-            }, settings);
+                var sdkPurchaseUnit = new SdkModels.PurchaseUnitRequest(
+                    amount: MapAmountWithBreakdownToServerSdk(purchaseUnit.Amount),
+                    referenceId: purchaseUnit.ReferenceId,
+                    payee: MapPayeeToServerSdk(purchaseUnit.Payee),
+                    paymentInstruction: MapPaymentInstructionToServerSdk(purchaseUnit.PaymentInstruction),
+                    description: purchaseUnit.Description,
+                    customId: purchaseUnit.CustomId,
+                    invoiceId: purchaseUnit.InvoiceId,
+                    softDescriptor: purchaseUnit.SoftDescriptor,
+                    items: purchaseUnit.Items?.Select(MapItemToServerSdk).Where(item => item is not null).ToList(),
+                    shipping: MapShippingToServerSdk(purchaseUnit.Shipping),
+                    supplementaryData: MapSupplementaryDataToServerSdk(purchaseUnit.SupplementaryData));
+
+                if (sdkPurchaseUnit is not null)
+                    purchaseUnits.Add(sdkPurchaseUnit);
+            }
+
+            SdkModels.PaymentSource sdkPaymentSource = null;
+            if (paymentSourceDetails is not null)
+            {
+                sdkPaymentSource = new SdkModels.PaymentSource();
+
+                if (paymentSourceDetails.Card is not null)
+                    sdkPaymentSource.Card = MapCardToServerSdk(paymentSourceDetails.Card);
+
+                if (paymentSourceDetails.PayPal is not null)
+                    sdkPaymentSource.Paypal = MapPaypalWalletToServerSdk(paymentSourceDetails.PayPal);
+
+                if (paymentSourceDetails.Venmo is not null)
+                    sdkPaymentSource.Venmo = MapVenmoWalletToServerSdk(paymentSourceDetails.Venmo);
+            }
+
+            var orderRequest = new SdkModels.OrderRequest(
+                intent: intent,
+                purchaseUnits: purchaseUnits,
+                payer: null,
+                paymentSource: sdkPaymentSource,
+                applicationContext: null);
+
+            var order = await CreateOrderWithServerSdkAsync(settings, orderRequest);
 
             //save order details for future using as the payment request
             var orderIdKey = await _localizationService.GetResourceAsync("Plugins.Payments.PayPalCommerce.Order.Id");
@@ -3646,12 +3686,52 @@ public class PayPalCommerceServiceManager
             else if (string.Equals(token.Type, nameof(PaymentSource.PayPal), StringComparison.InvariantCultureIgnoreCase))
                 paymentSourceDetails.PayPal = new() { VaultId = token.VaultId, StoredCredential = storedCredential };
 
-            var order = await _httpClient.RequestAsync<CreateOrderRequest, CreateOrderResponse>(new CreateOrderRequest
+            var intent = MapCheckoutPaymentIntent(settings.PaymentType);
+
+            var purchaseUnits = new List<SdkModels.PurchaseUnitRequest>();
+
+            if (purchaseUnit is not null)
             {
-                Intent = settings.PaymentType.ToString().ToUpper(),
-                PaymentSource = paymentSourceDetails,
-                PurchaseUnits = [purchaseUnit]
-            }, settings);
+                var sdkPurchaseUnit = new SdkModels.PurchaseUnitRequest(
+                    amount: MapAmountWithBreakdownToServerSdk(purchaseUnit.Amount),
+                    referenceId: purchaseUnit.ReferenceId,
+                    payee: MapPayeeToServerSdk(purchaseUnit.Payee),
+                    paymentInstruction: MapPaymentInstructionToServerSdk(purchaseUnit.PaymentInstruction),
+                    description: purchaseUnit.Description,
+                    customId: purchaseUnit.CustomId,
+                    invoiceId: purchaseUnit.InvoiceId,
+                    softDescriptor: purchaseUnit.SoftDescriptor,
+                    items: purchaseUnit.Items?.Select(MapItemToServerSdk).Where(item => item is not null).ToList(),
+                    shipping: MapShippingToServerSdk(purchaseUnit.Shipping),
+                    supplementaryData: MapSupplementaryDataToServerSdk(purchaseUnit.SupplementaryData));
+
+                if (sdkPurchaseUnit is not null)
+                    purchaseUnits.Add(sdkPurchaseUnit);
+            }
+
+            SdkModels.PaymentSource sdkPaymentSource = null;
+            if (paymentSourceDetails is not null)
+            {
+                sdkPaymentSource = new SdkModels.PaymentSource();
+
+                if (paymentSourceDetails.Card is not null)
+                    sdkPaymentSource.Card = MapCardToServerSdk(paymentSourceDetails.Card);
+
+                if (paymentSourceDetails.PayPal is not null)
+                    sdkPaymentSource.Paypal = MapPaypalWalletToServerSdk(paymentSourceDetails.PayPal);
+
+                if (paymentSourceDetails.Venmo is not null)
+                    sdkPaymentSource.Venmo = MapVenmoWalletToServerSdk(paymentSourceDetails.Venmo);
+            }
+
+            var orderRequest = new SdkModels.OrderRequest(
+                intent: intent,
+                purchaseUnits: purchaseUnits,
+                payer: null,
+                paymentSource: sdkPaymentSource,
+                applicationContext: null);
+
+            var order = await CreateOrderWithServerSdkAsync(settings, orderRequest);
 
             return order;
         });
