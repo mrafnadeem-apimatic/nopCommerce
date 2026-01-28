@@ -1,10 +1,9 @@
-using System.Globalization;
+﻿using System.Globalization;
 using System.Security.Cryptography;
 using System.Text;
 using Microsoft.AspNetCore.WebUtilities;
 using Newtonsoft.Json;
 using PaypalServerSdk.Standard;
-using PaypalServerSdk.Standard.Authentication;
 using PaypalServerSdk.Standard.Utilities;
 using SdkModels = PaypalServerSdk.Standard.Models;
 using Nop.Core;
@@ -25,8 +24,6 @@ using Nop.Plugin.Payments.PayPalCommerce.Services.Api.Identity;
 using Nop.Plugin.Payments.PayPalCommerce.Services.Api.Models;
 using Nop.Plugin.Payments.PayPalCommerce.Services.Api.Models.Enums;
 using Nop.Plugin.Payments.PayPalCommerce.Services.Api.Onboarding;
-using Nop.Plugin.Payments.PayPalCommerce.Services.Api.Orders;
-using Nop.Plugin.Payments.PayPalCommerce.Services.Api.Payments;
 using Nop.Plugin.Payments.PayPalCommerce.Services.Api.PaymentTokens;
 using Nop.Plugin.Payments.PayPalCommerce.Services.Api.Webhooks;
 using Nop.Services.Attributes;
@@ -35,7 +32,6 @@ using Nop.Services.Common;
 using Nop.Services.Customers;
 using Nop.Services.Directory;
 using Nop.Services.Localization;
-using Nop.Services.Logging;
 using Nop.Services.Media;
 using Nop.Services.Orders;
 using Nop.Services.Payments;
@@ -52,7 +48,6 @@ using NopShippingOption = Nop.Core.Domain.Shipping.ShippingOption;
 using Order = Nop.Plugin.Payments.PayPalCommerce.Services.Api.Models.Order;
 using PaymentType = Nop.Plugin.Payments.PayPalCommerce.Domain.PaymentType;
 using ShippingOption = Nop.Plugin.Payments.PayPalCommerce.Services.Api.Models.ShippingOption;
-using Microsoft.Extensions.Logging;
 
 namespace Nop.Plugin.Payments.PayPalCommerce.Services;
 
