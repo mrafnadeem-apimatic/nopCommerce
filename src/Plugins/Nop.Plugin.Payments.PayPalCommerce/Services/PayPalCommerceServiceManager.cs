@@ -275,6 +275,22 @@ public class PayPalCommerceServiceManager
     }
 
     /// <summary>
+    /// Prepare server SDK money object
+    /// </summary>
+    /// <param name="value">Amount value</param>
+    /// <param name="currencyCode">Currency code</param>
+    /// <returns>Server SDK money object</returns>
+    private static SdkModels.Money PrepareSdkMoney(decimal value, string currencyCode)
+    {
+        var format = PayPalCommerceDefaults.CurrenciesWithoutDecimals.Contains(currencyCode.ToUpper()) ? "0" : "0.00";
+        return new SdkModels.Money
+        {
+            CurrencyCode = currencyCode,
+            MValue = value.ToString(format, CultureInfo.InvariantCulture)
+        };
+    }
+
+    /// <summary>
     /// Convert money object to decimal value
     /// </summary>
     /// <param name="value">Amount value</param>
@@ -3323,8 +3339,14 @@ public class PayPalCommerceServiceManager
             if (string.IsNullOrEmpty(authorizationId))
                 throw new NopException("Authorization ID not set");
 
-            var request = new CreateVoidRequest { AuthorizationId = authorizationId };
-            await _httpClient.RequestAsync<CreateVoidRequest, EmptyResponse>(request, settings);
+            var input = new SdkModels.VoidPaymentInput
+            {
+                AuthorizationId = authorizationId,
+                PaypalRequestId = Guid.NewGuid().ToString(),
+                Prefer = "return=representation"
+            };
+
+            await _paypalServerSdkClient.PaymentsController.VoidPaymentAsync(input);
 
             return true;
         });
@@ -3354,12 +3376,29 @@ public class PayPalCommerceServiceManager
             if (string.IsNullOrEmpty(nopOrder.CaptureTransactionId))
                 throw new NopException("Capture ID not set");
 
-            var request = new CreateRefundRequest
+            var refundInput = new SdkModels.RefundCapturedPaymentInput
             {
                 CaptureId = nopOrder.CaptureTransactionId,
-                Amount = amount.HasValue ? PrepareMoney(amount.Value, currencyCode) : null
+                PaypalRequestId = Guid.NewGuid().ToString(),
+                Prefer = "return=representation"
             };
-            var refund = await _httpClient.RequestAsync<CreateRefundRequest, CreateRefundResponse>(request, settings);
+
+            if (amount.HasValue)
+            {
+                refundInput.Body = new SdkModels.RefundRequest
+                {
+                    Amount = PrepareSdkMoney(amount.Value, currencyCode)
+                };
+            }
+
+            var refundResponse = await _paypalServerSdkClient.PaymentsController.RefundCapturedPaymentAsync(refundInput);
+            var sdkRefund = refundResponse?.Data;
+            if (sdkRefund is null)
+                throw new NopException("Failed to read PayPal refund data.");
+
+            // Map SDK refund back to existing Refund model via JSON round-trip
+            var serializedRefund = JsonConvert.SerializeObject(sdkRefund);
+            var refund = JsonConvert.DeserializeObject<Refund>(serializedRefund);
 
             if (refund.Status?.ToUpper() == RefundStatusType.CANCELLED.ToString())
                 throw new NopException("The refund was cancelled");
