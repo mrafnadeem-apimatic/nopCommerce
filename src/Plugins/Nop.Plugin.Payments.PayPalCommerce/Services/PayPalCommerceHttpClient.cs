@@ -82,7 +82,6 @@ public class PayPalCommerceHttpClient
     public async Task<TResponse> RequestAsync<TRequest, TResponse>(TRequest request, PayPalCommerceSettings settings)
         where TRequest : IApiRequest where TResponse : IApiResponse
     {
-        Console.WriteLine($"PayPalCommerceHttpClient.RequestAsync called with request: {nameof(TRequest)}");
         //prepare request body, content is always JSON except for access token requests
         var requestString = JsonConvert.SerializeObject(request, new JsonSerializerSettings { NullValueHandling = NullValueHandling.Ignore });
         var requestContent = request is GetAccessTokenRequest accessTokenRequest
