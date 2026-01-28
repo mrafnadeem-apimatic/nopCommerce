@@ -1902,6 +1902,29 @@ public class PayPalCommerceServiceManager
         return order;
     }
 
+    private async Task<Order> AuthorizeOrderWithServerSdkAsync(PayPalCommerceSettings settings, string orderId)
+    {
+        if (string.IsNullOrEmpty(orderId))
+            throw new ArgumentNullException(nameof(orderId));
+
+        var input = new SdkModels.AuthorizeOrderInput(
+            id: orderId,
+            contentType: "application/json",
+            paypalRequestId: Guid.NewGuid().ToString(),
+            prefer: "return=representation");
+
+        var response = await _paypalServerSdkClient.OrdersController.AuthorizeOrderAsync(input);
+        if (response?.Data is null)
+            throw new NopException("Failed to read PayPal order data.");
+
+        var sdkOrder = response.Data;
+        var order = MapOrderFromServerSdk(sdkOrder);
+        if (order is null)
+            throw new NopException("Failed to map PayPal order response.");
+
+        return order;
+    }
+
     private async Task<Order> CaptureOrderWithServerSdkAsync(PayPalCommerceSettings settings, string orderId)
     {
         if (string.IsNullOrEmpty(orderId))
@@ -3005,8 +3028,7 @@ public class PayPalCommerceServiceManager
 
                 order = settings.PaymentType switch
                 {
-                    Domain.PaymentType.Authorize => await _httpClient.RequestAsync<CreateAuthorizationRequest, CreateAuthorizationResponse>
-                        (new CreateAuthorizationRequest { OrderId = order.Id }, settings),
+                    Domain.PaymentType.Authorize => await AuthorizeOrderWithServerSdkAsync(settings, order.Id),
                     Domain.PaymentType.Capture => await CaptureOrderWithServerSdkAsync(settings, order.Id),
                     _ => null
                 };
