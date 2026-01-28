@@ -1,4 +1,4 @@
-﻿using System.Globalization;
+using System.Globalization;
 using System.Security.Cryptography;
 using System.Text;
 using Microsoft.AspNetCore.WebUtilities;
@@ -98,6 +98,7 @@ public class PayPalCommerceServiceManager
     private readonly PayPalTokenService _tokenService;
     private readonly ShippingSettings _shippingSettings;
     private readonly TaxSettings _taxSettings;
+    private readonly PaypalServerSdkClient _paypalServerSdkClient;
 
     #endregion
 
@@ -137,7 +138,8 @@ public class PayPalCommerceServiceManager
         PayPalCommerceHttpClient httpClient,
         PayPalTokenService tokenService,
         ShippingSettings shippingSettings,
-        TaxSettings taxSettings)
+        TaxSettings taxSettings,
+        PaypalServerSdkClient paypalServerSdkClient)
     {
         _currencySettings = currencySettings;
         _customerSettings = customerSettings;
@@ -174,6 +176,7 @@ public class PayPalCommerceServiceManager
         _tokenService = tokenService;
         _shippingSettings = shippingSettings;
         _taxSettings = taxSettings;
+        _paypalServerSdkClient = paypalServerSdkClient;
     }
 
     #endregion
@@ -1845,8 +1848,6 @@ public class PayPalCommerceServiceManager
         if (orderRequest is null)
             throw new ArgumentNullException(nameof(orderRequest));
 
-        var client = CreatePaypalServerSdkClient(settings);
-
         var input = new SdkModels.CreateOrderInput(
             contentType: "application/json",
             body: orderRequest,
@@ -1854,7 +1855,7 @@ public class PayPalCommerceServiceManager
             paypalPartnerAttributionId: PayPalCommerceDefaults.PartnerHeader.Value,
             prefer: "return=representation");
 
-        var response = await client.OrdersController.CreateOrderAsync(input);
+        var response = await _paypalServerSdkClient.OrdersController.CreateOrderAsync(input);
         if (response?.Data is null)
             throw new NopException("Failed to read PayPal order data.");
 
@@ -1871,11 +1872,9 @@ public class PayPalCommerceServiceManager
         if (string.IsNullOrEmpty(orderId))
             throw new ArgumentException("Order ID is required.", nameof(orderId));
 
-        var client = CreatePaypalServerSdkClient(settings);
-
         var input = new SdkModels.GetOrderInput(id: orderId);
 
-        var response = await client.OrdersController.GetOrderAsync(input);
+        var response = await _paypalServerSdkClient.OrdersController.GetOrderAsync(input);
         if (response?.Data is null)
             throw new NopException("Failed to read PayPal order data.");
 
@@ -1892,15 +1891,13 @@ public class PayPalCommerceServiceManager
         if (string.IsNullOrEmpty(orderId))
             throw new ArgumentNullException(nameof(orderId));
 
-        var client = CreatePaypalServerSdkClient(settings);
-
         var input = new SdkModels.CaptureOrderInput(
             id: orderId,
             contentType: "application/json",
             paypalRequestId: Guid.NewGuid().ToString(),
             prefer: "return=representation");
 
-        var response = await client.OrdersController.CaptureOrderAsync(input);
+        var response = await _paypalServerSdkClient.OrdersController.CaptureOrderAsync(input);
         if (response?.Data is null)
             throw new NopException("Failed to read PayPal order data.");
 
@@ -1926,8 +1923,6 @@ public class PayPalCommerceServiceManager
         if (sdkPatches is null || sdkPatches.Count == 0)
             return;
 
-        var client = CreatePaypalServerSdkClient(settings);
-
         var input = new SdkModels.PatchOrderInput(
             id: orderId,
             contentType: "application/json",
@@ -1935,7 +1930,7 @@ public class PayPalCommerceServiceManager
             paypalAuthAssertion: null,
             body: sdkPatches);
 
-        await client.OrdersController.PatchOrderAsync(input);
+        await _paypalServerSdkClient.OrdersController.PatchOrderAsync(input);
     }
 
     private static List<SdkModels.Patch> MapPatchesToServerSdk(IEnumerable<Patch<object>> patches)
@@ -2575,34 +2570,6 @@ public class PayPalCommerceServiceManager
 
         var serializedOrder = JsonConvert.SerializeObject(sdkOrder);
         return JsonConvert.DeserializeObject<Order>(serializedOrder);
-    }
-
-    private static PaypalServerSdkClient CreatePaypalServerSdkClient(PayPalCommerceSettings settings)
-    {
-        var environment = settings.UseSandbox
-            ? PaypalServerSdk.Standard.Environment.Sandbox
-            : PaypalServerSdk.Standard.Environment.Production;
-
-        var credentials = new ClientCredentialsAuthModel.Builder(
-            settings.ClientId,
-            settings.SecretKey
-        ).Build();
-
-        var builder = new PaypalServerSdkClient.Builder()
-            .ClientCredentialsAuth(credentials)
-            .Environment(environment)
-            .LoggingConfig(config => config
-                .LogLevel(LogLevel.Information));
-
-        if (settings.RequestTimeout.HasValue && settings.RequestTimeout.Value > 0)
-        {
-            builder.HttpClientConfig(config =>
-            {
-                config.Timeout(TimeSpan.FromSeconds(settings.RequestTimeout.Value));
-            });
-        }
-
-        return builder.Build();
     }
 
     /// <summary>
@@ -3307,15 +3274,13 @@ public class PayPalCommerceServiceManager
             if (string.IsNullOrEmpty(authorizationId))
                 throw new NopException("Authorization ID not set");
 
-            var client = CreatePaypalServerSdkClient(settings);
-
             var input = new SdkModels.CaptureAuthorizedPaymentInput(
                 authorizationId: authorizationId,
                 contentType: "application/json",
                 paypalRequestId: Guid.NewGuid().ToString(),
                 prefer: "return=representation");
 
-            var response = await client.PaymentsController.CaptureAuthorizedPaymentAsync(input);
+            var response = await _paypalServerSdkClient.PaymentsController.CaptureAuthorizedPaymentAsync(input);
             var sdkCapture = response?.Data;
             if (sdkCapture is null)
                 throw new NopException("Failed to read PayPal capture data.");
