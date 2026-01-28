@@ -1078,10 +1078,16 @@ public class PayPalCommerceServiceManager
             if (string.IsNullOrEmpty(token.VaultCustomerId))
                 continue;
 
-            //try to get payment tokens from the vault
-            var response = await _httpClient
-                .RequestAsync<GetPaymentTokensRequest, GetPaymentTokensResponse>(new() { VaultCustomerId = token.VaultCustomerId }, settings);
-            paymentTokens.AddRange(response?.PaymentTokens ?? new());
+            //try to get payment tokens from the vault using the PayPal Server SDK
+            var listInput = new SdkModels.ListCustomerPaymentTokensInput
+            {
+                CustomerId = token.VaultCustomerId
+            };
+
+            var listResponse = await _paypalServerSdkClient.VaultController.ListCustomerPaymentTokensAsync(listInput);
+            var mappedResponse = MapCustomerVaultPaymentTokensFromServerSdk(listResponse?.Data);
+
+            paymentTokens.AddRange(mappedResponse?.PaymentTokens ?? new());
         }
         if (paymentTokens?.Any() != true)
             return new List<PayPalToken>();
@@ -2611,6 +2617,33 @@ public class PayPalCommerceServiceManager
         return JsonConvert.DeserializeObject<Order>(serializedOrder);
     }
 
+    private static PaymentToken MapPaymentTokenFromServerSdk(SdkModels.PaymentTokenResponse sdkPaymentToken)
+    {
+        if (sdkPaymentToken is null)
+            return null;
+
+        var serializedToken = JsonConvert.SerializeObject(sdkPaymentToken);
+        return JsonConvert.DeserializeObject<PaymentToken>(serializedToken);
+    }
+
+    private static PaymentToken MapSetupTokenFromServerSdk(SdkModels.SetupTokenResponse sdkSetupToken)
+    {
+        if (sdkSetupToken is null)
+            return null;
+
+        var serializedToken = JsonConvert.SerializeObject(sdkSetupToken);
+        return JsonConvert.DeserializeObject<PaymentToken>(serializedToken);
+    }
+
+    private static GetPaymentTokensResponse MapCustomerVaultPaymentTokensFromServerSdk(SdkModels.CustomerVaultPaymentTokensResponse sdkResponse)
+    {
+        if (sdkResponse is null)
+            return null;
+
+        var serializedResponse = JsonConvert.SerializeObject(sdkResponse);
+        return JsonConvert.DeserializeObject<GetPaymentTokensResponse>(serializedResponse);
+    }
+
     /// <summary>
     /// Update order shipping details
     /// </summary>
@@ -3533,7 +3566,19 @@ public class PayPalCommerceServiceManager
                 }
             };
 
-            return await _httpClient.RequestAsync<CreateSetupTokenRequest, CreateSetupTokenResponse>(request, settings);
+            // map plugin request to Server SDK model and create setup token via SDK
+            var sdkRequestJson = JsonConvert.SerializeObject(request);
+            var sdkRequest = JsonConvert.DeserializeObject<SdkModels.SetupTokenRequest>(sdkRequestJson);
+
+            var createSetupTokenInput = new SdkModels.CreateSetupTokenInput
+            {
+                Body = sdkRequest
+            };
+
+            var createSetupTokenResponse = await _paypalServerSdkClient.VaultController.CreateSetupTokenAsync(createSetupTokenInput);
+            var sdkSetupToken = createSetupTokenResponse?.Data;
+
+            return MapSetupTokenFromServerSdk(sdkSetupToken);
         });
     }
 
@@ -3585,7 +3630,17 @@ public class PayPalCommerceServiceManager
                 }
             };
 
-            var paymentToken = await _httpClient.RequestAsync<CreatePaymentTokenRequest, CreatePaymentTokenResponse>(paymentTokenRequest, settings);
+            // map plugin request to Server SDK model and create payment token via SDK
+            var paymentTokenRequestJson = JsonConvert.SerializeObject(paymentTokenRequest);
+            var paymentTokenSdkRequest = JsonConvert.DeserializeObject<SdkModels.PaymentTokenRequest>(paymentTokenRequestJson);
+
+            var createPaymentTokenInput = new SdkModels.CreatePaymentTokenInput
+            {
+                Body = paymentTokenSdkRequest
+            };
+
+            var createPaymentTokenResponse = await _paypalServerSdkClient.VaultController.CreatePaymentTokenAsync(createPaymentTokenInput);
+            var paymentToken = MapPaymentTokenFromServerSdk(createPaymentTokenResponse?.Data);
             if (string.IsNullOrEmpty(paymentToken?.Id))
                 throw new NopException("Payment token not created");
 
@@ -4508,7 +4563,7 @@ public class PayPalCommerceServiceManager
                     throw new NopException("You cannot delete this token");
 
                 await _tokenService.DeleteAsync(deleteToken);
-                await _httpClient.RequestAsync<DeletePaymentTokenRequest, EmptyResponse>(new() { Id = deleteToken.VaultId }, settings);
+                await _paypalServerSdkClient.VaultController.DeletePaymentTokenAsync(deleteToken.VaultId);
             }
 
             //try to mark token as default
@@ -4563,7 +4618,7 @@ public class PayPalCommerceServiceManager
             {
                 try
                 {
-                    await _httpClient.RequestAsync<DeletePaymentTokenRequest, EmptyResponse>(new() { Id = token.VaultId }, settings);
+                    await _paypalServerSdkClient.VaultController.DeletePaymentTokenAsync(token.VaultId);
                 }
                 catch { }
             }
