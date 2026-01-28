@@ -1876,7 +1876,7 @@ public class PayPalCommerceServiceManager
             throw new NopException("Failed to read PayPal order data.");
 
         var sdkOrder = response.Data;
-        var order = MapOrderFromServerSdk(sdkOrder);
+        var order = MapOrderFromServerSdk<SdkModels.Order>(sdkOrder);
         if (order is null)
             throw new NopException("Failed to map PayPal order response.");
 
@@ -1895,7 +1895,7 @@ public class PayPalCommerceServiceManager
             throw new NopException("Failed to read PayPal order data.");
 
         var sdkOrder = response.Data;
-        var order = MapOrderFromServerSdk(sdkOrder);
+        var order = MapOrderFromServerSdk<SdkModels.Order>(sdkOrder);
         if (order is null)
             throw new NopException("Failed to map PayPal order response.");
 
@@ -1918,7 +1918,7 @@ public class PayPalCommerceServiceManager
             throw new NopException("Failed to read PayPal order data.");
 
         var sdkOrder = response.Data;
-        var order = MapOrderFromServerSdk(sdkOrder);
+        var order = MapOrderFromServerSdk<SdkModels.OrderAuthorizeResponse>(sdkOrder);
         if (order is null)
             throw new NopException("Failed to map PayPal order response.");
 
@@ -1941,7 +1941,7 @@ public class PayPalCommerceServiceManager
             throw new NopException("Failed to read PayPal order data.");
 
         var sdkOrder = response.Data;
-        var order = MapOrderFromServerSdk(sdkOrder);
+        var order = MapOrderFromServerSdk<SdkModels.Order>(sdkOrder);
         if (order is null)
             throw new NopException("Failed to map PayPal order response.");
 
@@ -2602,7 +2602,7 @@ public class PayPalCommerceServiceManager
             permitMultiplePaymentTokens: instruction.PermitMultiplePaymentTokens);
     }
 
-    private static Order MapOrderFromServerSdk(SdkModels.Order sdkOrder)
+    private static Order MapOrderFromServerSdk<T>(T sdkOrder)
     {
         if (sdkOrder is null)
             return null;
