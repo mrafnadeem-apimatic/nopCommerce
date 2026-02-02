@@ -1,4 +1,4 @@
-﻿using System.Globalization;
+using System.Globalization;
 using Microsoft.Extensions.Logging;
 using Nop.Services.Logging;
 using PaypalServerSdk.Standard;
@@ -51,25 +51,82 @@ public class PayPalOrdersService
         if (!string.IsNullOrEmpty(configUseSandbox) && bool.TryParse(configUseSandbox, out var parsedUseSandbox))
             useSandbox = parsedUseSandbox;
 
+        // SDK logging is potentially sensitive (bodies/headers), so make it opt-in
+        var enableSdkLogging = false;
+        var configEnableLogging = _configuration["PayPal:EnableSdkLogging"];
+        if (!string.IsNullOrEmpty(configEnableLogging) && bool.TryParse(configEnableLogging, out var parsedEnableLogging))
+            enableSdkLogging = parsedEnableLogging;
+
         var environment = useSandbox
             ? PaypalServerSdk.Standard.Environment.Sandbox
             : PaypalServerSdk.Standard.Environment.Production;
 
-        var client = new PaypalServerSdkClient.Builder()
+        var builder = new PaypalServerSdkClient.Builder()
             .ClientCredentialsAuth(
                 new ClientCredentialsAuthModel.Builder(
                         clientId,
                         clientSecret
                     )
                     .Build())
-            .Environment(environment)
-            .LoggingConfig(config => config
+            .Environment(environment);
+
+        // Configure SDK logging based on flag:
+        // - when enabled: log at Information level with bodies and headers
+        // - when disabled: minimal logging at Error level, no bodies/headers
+        if (enableSdkLogging)
+        {
+            builder = builder.LoggingConfig(config => config
                 .LogLevel(LogLevel.Information)
                 .RequestConfig(reqConfig => reqConfig.Body(true))
-                .ResponseConfig(respConfig => respConfig.Headers(true)))
-            .Build();
+                .ResponseConfig(respConfig => respConfig.Headers(true)));
+        }
+        else
+        {
+            builder = builder.LoggingConfig(config => config
+                .LogLevel(LogLevel.Error));
+        }
 
-        return client;
+        return builder.Build();
+    }
+
+    /// <summary>
+    /// Get the number of minor-unit decimal digits for a given ISO 4217 currency code.
+    /// Default is 2; override for currencies like JPY (0) or TND (3).
+    /// </summary>
+    /// <param name="currencyCode">ISO 4217 currency code (e.g. USD, JPY).</param>
+    /// <returns>Minor unit digit count.</returns>
+    protected virtual int GetCurrencyMinorUnit(string currencyCode)
+    {
+        if (string.IsNullOrWhiteSpace(currencyCode))
+            return 2;
+
+        currencyCode = currencyCode.ToUpperInvariant();
+
+        // Zero-decimal currencies
+        switch (currencyCode)
+        {
+            case "JPY":
+            case "HUF":
+            case "TWD":
+            case "KRW":
+                return 0;
+        }
+
+        // Three-decimal currencies
+        switch (currencyCode)
+        {
+            case "BHD":
+            case "IQD":
+            case "JOD":
+            case "KWD":
+            case "LYD":
+            case "OMR":
+            case "TND":
+                return 3;
+        }
+
+        // Default: 2 decimal places
+        return 2;
     }
 
     #endregion
@@ -89,7 +146,9 @@ public class PayPalOrdersService
         if (string.IsNullOrEmpty(clientId) || string.IsNullOrEmpty(clientSecret))
             return (false, null, null, "PayPal is not configured. Provide ClientId and ClientSecret either in plugin settings or under PayPal:ClientId/PayPal:ClientSecret in appsettings.");
 
-        var amountValue = orderTotal.ToString("0.00", CultureInfo.InvariantCulture);
+        var minorUnits = GetCurrencyMinorUnit(currencyCode);
+        var roundedTotal = Math.Round(orderTotal, minorUnits, MidpointRounding.AwayFromZero);
+        var amountValue = roundedTotal.ToString($"F{minorUnits}", CultureInfo.InvariantCulture);
 
         var client = CreateClient();
         var ordersController = client.OrdersController;
