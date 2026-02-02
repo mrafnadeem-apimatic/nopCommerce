@@ -139,6 +139,11 @@ public class PayPalOrdersService
         string returnUrl,
         string cancelUrl)
     {
+        // normalize and validate currency code (PayPal expects uppercase ISO 4217)
+        currencyCode = currencyCode?.Trim().ToUpperInvariant();
+        if (string.IsNullOrEmpty(currencyCode) || currencyCode.Length != 3)
+            return (false, null, null, "Invalid currency code. Provide a valid three-letter ISO 4217 currency (e.g. USD, EUR, JPY).");
+
         // validate we have credentials either from settings or configuration
         var clientId = _settings.ClientId ?? _configuration["PayPal:ClientId"];
         var clientSecret = _settings.ClientSecret ?? _configuration["PayPal:ClientSecret"];
@@ -217,6 +222,13 @@ public class PayPalOrdersService
 
     public async Task<CaptureResult> CaptureOrderAsync(string payPalOrderId)
     {
+        if (string.IsNullOrWhiteSpace(payPalOrderId))
+            return new CaptureResult
+            {
+                Success = false,
+                Error = "PayPal order id is required."
+            };
+
         var clientId = _settings.ClientId ?? _configuration["PayPal:ClientId"];
         var clientSecret = _settings.ClientSecret ?? _configuration["PayPal:ClientSecret"];
 
