@@ -1,0 +1,11 @@
+{
+  "Group": "Payment methods",
+  "FriendlyName": "PayPal",
+  "SystemName": "Payments.PayPal",
+  "Version": "5.00.1",
+  "SupportedVersions": [ "5.00" ],
+  "Author": "Custom",
+  "DisplayOrder": 1,
+  "FileName": "Nop.Plugin.Payments.PayPal.dll",
+  "Description": "This plugin enables PayPal order-based payments using the PayPal Orders API."
+}
