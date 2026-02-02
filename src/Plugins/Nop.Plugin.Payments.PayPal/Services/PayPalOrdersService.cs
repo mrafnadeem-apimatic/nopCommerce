@@ -144,6 +144,17 @@ public class PayPalOrdersService
         if (string.IsNullOrEmpty(currencyCode) || currencyCode.Length != 3)
             return (false, null, null, "Invalid currency code. Provide a valid three-letter ISO 4217 currency (e.g. USD, EUR, JPY).");
 
+        // validate order total
+        if (orderTotal <= 0)
+            return (false, null, null, "Invalid order total. Must be greater than zero.");
+
+        // validate return and cancel URLs
+        if (string.IsNullOrWhiteSpace(returnUrl) || !Uri.IsWellFormedUriString(returnUrl, UriKind.Absolute))
+            return (false, null, null, "Invalid returnUrl. Provide a valid non-empty absolute URL.");
+
+        if (string.IsNullOrWhiteSpace(cancelUrl) || !Uri.IsWellFormedUriString(cancelUrl, UriKind.Absolute))
+            return (false, null, null, "Invalid cancelUrl. Provide a valid non-empty absolute URL.");
+
         // validate we have credentials either from settings or configuration
         var clientId = _settings.ClientId ?? _configuration["PayPal:ClientId"];
         var clientSecret = _settings.ClientSecret ?? _configuration["PayPal:ClientSecret"];
